@@ -321,6 +321,12 @@ class MainActivity : MusicActivity() {
                 coverStyle = coverStyle,
                 fastScrollTouchArea = fastScrollTouchArea,
             ) {
+                // The access gate: until a valid code has been entered once on this device, it is all
+                // the app shows - library, setup and player stay behind it.
+                var accessUnlocked by remember { mutableStateOf(AccessGate.isUnlocked(this@MainActivity)) }
+                if (!accessUnlocked) {
+                    AccessGateScreen(onUnlocked = { accessUnlocked = true })
+                } else {
                 // The library is no screen of its own, so every screen is one it can go to.
                 val navigator = remember { IntentNavigator(this, currentScreen = null) }
                 CompositionLocalProvider(LocalNavigator provides navigator) {
@@ -366,6 +372,7 @@ class MainActivity : MusicActivity() {
                             }
                         }
                     }
+                }
                 }
             }
         }

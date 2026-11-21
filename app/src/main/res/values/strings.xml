@@ -1,5 +1,10 @@
 <resources>
     <string name="app_name">Music</string>
+    <!-- The access gate shown on a device's first open - see AccessGate -->
+    <string name="access_gate_prompt">Enter your access code to continue</string>
+    <string name="access_gate_label">Access code</string>
+    <string name="access_gate_error">Wrong code, try again</string>
+    <string name="access_gate_button">Unlock</string>
     <string name="quick_play_shortcut_shuffle_short">Shuffle</string>
     <string name="quick_play_shortcut_shuffle_long">Shuffle all</string>
     <string name="quick_play_shortcut_play_short">Play</string>
