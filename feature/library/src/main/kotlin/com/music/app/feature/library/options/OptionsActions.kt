@@ -1,0 +1,479 @@
+package com.music.app.feature.library.options
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.data.contentUri
+import com.music.app.core.data.itemsOrEmpty
+import com.music.app.core.designsystem.component.toast
+import com.music.app.core.model.Artist
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.Track
+import com.music.app.core.navigation.AppNavigator
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.library.AlbumDetailScreen
+import com.music.app.feature.library.ArtistDetailScreen
+import com.music.app.feature.library.FolderDetailScreen
+import com.music.app.feature.explorer.FolderExplorerScreen
+import com.music.app.feature.library.GenreDetailScreen
+import com.music.app.feature.library.M3U_MIME_TYPE
+import com.music.app.feature.library.M3U_PICKER_MIME_TYPES
+import com.music.app.feature.library.PlaylistDetailScreen
+import com.music.app.feature.library.PlaylistNameDialog
+import java.io.File
+import com.music.app.feature.library.PlaylistPickerDialog
+import com.music.app.feature.library.R
+import com.music.app.feature.library.operation.AddToPrivateDialog
+import com.music.app.feature.library.operation.DeleteFromDeviceDialog
+import com.music.app.feature.library.operation.DeletePlaylistsDialog
+import com.music.app.feature.library.operation.ExcludeFoldersDialog
+import com.music.app.feature.library.operation.RemoveFromListDialog
+import com.music.app.feature.library.playlist.AddCollectionsScreen
+import com.music.app.feature.library.playlist.AddTracksScreen
+import com.music.app.feature.library.playlist.PickDestination
+import com.music.app.feature.library.playlist.EditPlaylistScreen
+import com.music.app.feature.tageditor.TagEditorScreen
+import com.music.app.feature.tageditor.autotag.AutoTagScreen
+
+/**
+ * A dialog or file picker a chosen action is waiting on, for [target]. Until it ends the action is still
+ * under way, so whatever it answers reaches a composition that is still there.
+ */
+internal sealed interface FollowUp {
+    val target: OptionsTarget
+
+    data class PlaylistPicker(override val target: OptionsTarget) : FollowUp
+    data class Properties(override val target: OptionsTarget.ForTrack) : FollowUp
+    data class Rename(override val target: OptionsTarget) : FollowUp
+    data class ExcludeFolder(override val target: OptionsTarget.ForFolder) : FollowUp
+    data class DeletePlaylist(override val target: OptionsTarget.ForPlaylist) : FollowUp
+    data class RemoveFromList(override val target: OptionsTarget.ForTrack, val list: RemovableTrackList) : FollowUp
+    data class AddToPrivate(override val target: OptionsTarget) : FollowUp
+    data class DeleteFromDevice(override val target: OptionsTarget) : FollowUp
+    data class ImportFile(override val target: OptionsTarget.ForPlaylist) : FollowUp
+    data class ExportFile(override val target: OptionsTarget) : FollowUp
+    data class ChooseArtist(override val target: OptionsTarget, val artists: List<Artist>) : FollowUp
+}
+
+/**
+ * Carries out what an [OptionsAction] does to an [OptionsTarget] - the one place that logic lives, for a
+ * row's options sheet and a collection's own menu alike, so the same action does the same thing wherever
+ * it is chosen.
+ *
+ * Most actions happen at once. The rest - picking a playlist, a track's properties, confirming an
+ * exclusion, a removal or a deletion, picking a file to import or to export to - open a [followUp], which
+ * [OptionsFollowUps] draws until it ends.
+ */
+@Stable
+internal class OptionsActions(
+    val viewModel: OptionsActionsViewModel,
+    private val navigator: AppNavigator,
+    private val context: Context,
+) {
+    var followUp by mutableStateOf<FollowUp?>(null)
+        private set
+
+    /** Whether a chosen action is waiting on a dialog or a file picker. */
+    val isFollowingUp: Boolean get() = followUp != null
+
+    fun perform(target: OptionsTarget, action: OptionsAction) {
+        when (action) {
+            OptionsAction.PLAY -> viewModel.play(target)
+            OptionsAction.SHUFFLE -> viewModel.shuffle(target)
+            OptionsAction.PLAY_NEXT -> {
+                viewModel.playNext(target)
+                context.toast(context.getString(R.string.options_played_next))
+            }
+            OptionsAction.QUEUE_ADD -> {
+                viewModel.addToQueue(target)
+                context.toast(context.getString(R.string.options_queued))
+            }
+            OptionsAction.PLAYLIST_ADD -> followUp = FollowUp.PlaylistPicker(target)
+            // A track or album credited to several artists asks which of them to go to.
+            OptionsAction.ARTIST_DETAILS -> {
+                val artistIds = artistIdsOf(target)
+                val artists = artistIds.mapNotNull(viewModel.artistsById.value::get)
+                if (artists.size > 1) followUp = FollowUp.ChooseArtist(target, artists) else navigator.go(ArtistDetailScreen(artistIds.first()))
+            }
+            OptionsAction.ALBUM_DETAILS -> navigator.go(AlbumDetailScreen(albumIdOf(target)))
+            OptionsAction.SONG_PROPERTIES -> followUp = FollowUp.Properties(target as OptionsTarget.ForTrack)
+            OptionsAction.EDIT_TAGS -> navigator.go(TagEditorScreen((target as OptionsTarget.ForTrack).track.id))
+            OptionsAction.AUTO_TAG -> if (target is OptionsTarget.ForSelection) {
+                navigator.go(AutoTagScreen(target.tracks.map { it.id }))
+            } else {
+                viewModel.loadTracks(target) { tracks -> navigator.go(AutoTagScreen(tracks.map { it.id })) }
+            }
+            OptionsAction.STOP_COUNTING_PLAYS -> {
+                viewModel.setPlaysCounted(target, counted = false)
+                context.toast(context.getString(R.string.options_plays_uncounted))
+            }
+            OptionsAction.COUNT_PLAYS -> {
+                viewModel.setPlaysCounted(target, counted = true)
+                context.toast(context.getString(R.string.options_plays_counted))
+            }
+            OptionsAction.VIEW_DETAILS -> navigator.go(detailScreenOf(target))
+            OptionsAction.BROWSE_FOLDER -> navigator.go(FolderExplorerScreen((target as OptionsTarget.ForFolder).folder.path))
+            OptionsAction.ADD_TRACKS -> navigator.go(AddTracksScreen(PickDestination.Playlist(playlistOf(target).playlist.id)))
+            OptionsAction.ADD_COLLECTIONS -> navigator.go(AddCollectionsScreen(playlistOf(target).playlist.id))
+            OptionsAction.EDIT -> navigator.go(EditPlaylistScreen(playlistOf(target).playlist.id))
+            OptionsAction.IMPORT -> followUp = FollowUp.ImportFile(playlistOf(target))
+            OptionsAction.EXPORT -> followUp = FollowUp.ExportFile(target)
+            OptionsAction.DELETE -> followUp = FollowUp.DeletePlaylist(playlistOf(target))
+            OptionsAction.REMOVE_FROM_PLAYLIST,
+            OptionsAction.REMOVE_FROM_RECENTLY_PLAYED,
+            OptionsAction.REMOVE_FROM_MOST_PLAYED,
+            -> (target as OptionsTarget.ForTrack).let { followUp = FollowUp.RemoveFromList(it, checkNotNull(it.removableFrom)) }
+            OptionsAction.ADD_TO_PRIVATE -> followUp = FollowUp.AddToPrivate(target)
+            OptionsAction.DELETE_FROM_DEVICE -> followUp = FollowUp.DeleteFromDevice(target)
+            OptionsAction.EXCLUDE -> followUp = FollowUp.ExcludeFolder(target as OptionsTarget.ForFolder)
+            OptionsAction.SHARE -> if (target is OptionsTarget.ForTrack) {
+                context.shareTrack(target.track)
+            } else {
+                viewModel.loadTracks(target) { tracks -> context.shareTracks(tracks) }
+            }
+        }
+    }
+
+    /**
+     * Carries out [action] on the collection [parent] names, for a row with no [OptionsTarget] of its own -
+     * Most played. Playing it whole, or shuffled, is all such a row offers.
+     */
+    fun perform(parent: PlaybackParent, action: OptionsAction) {
+        when (action) {
+            OptionsAction.PLAY -> viewModel.playCollection(parent, shuffled = false)
+            OptionsAction.SHUFFLE -> viewModel.playCollection(parent, shuffled = true)
+            else -> error("$parent offers no $action")
+        }
+    }
+
+    /** Asks for [target]'s new name - a track's or a video's file, a playlist - where it [isRenamable]. */
+    fun rename(target: OptionsTarget) {
+        if (target.isRenamable) followUp = FollowUp.Rename(target)
+    }
+
+    fun endFollowUp() {
+        followUp = null
+    }
+}
+
+@Composable
+internal fun rememberOptionsActions(): OptionsActions {
+    val viewModel: OptionsActionsViewModel = hiltViewModel()
+    val navigator = LocalNavigator.current
+    val context = LocalContext.current
+    return remember(viewModel, navigator, context) { OptionsActions(viewModel, navigator, context) }
+}
+
+/**
+ * Whatever dialog or file picker [actions] is waiting on. [onFinished] hears when it ends, whichever way, and
+ * [onActionDone] only when it ends having done what was asked - confirmed, picked, saved - not dismissed;
+ * [onCollectionDeleted] hears when a collection is gone - a playlist deleted, or every track of an album,
+ * artist, genre or folder deleted from the device - which is how its own screen leaves once there is
+ * nothing left to show.
+ */
+@Composable
+internal fun OptionsFollowUps(
+    actions: OptionsActions,
+    onFinished: () -> Unit = {},
+    onActionDone: () -> Unit = {},
+    onCollectionDeleted: () -> Unit = {},
+) {
+    val context = LocalContext.current
+    val viewModel = actions.viewModel
+    val finish = {
+        actions.endFollowUp()
+        onFinished()
+    }
+
+    when (val followUp = actions.followUp) {
+        null -> Unit
+
+        is FollowUp.Rename -> when (val target = followUp.target) {
+            is OptionsTarget.ForPlaylist -> {
+                val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+                PlaylistNameDialog(
+                    dialogTitle = stringResource(R.string.playlists_rename_title),
+                    confirmLabel = stringResource(R.string.playlists_rename),
+                    initialName = target.playlist.name,
+                    takenNames = playlists.itemsOrEmpty.filter { it.id != target.playlist.id }.map { it.name },
+                    onDismiss = finish,
+                    onConfirm = { name ->
+                        onActionDone()
+                        viewModel.renamePlaylist(target.playlist.id, name)
+                        finish()
+                    },
+                )
+            }
+
+            // The file's whole name, its extension with it: what is typed is what it is called.
+            is OptionsTarget.ForTrack -> PlaylistNameDialog(
+                dialogTitle = stringResource(R.string.options_rename_file_title),
+                confirmLabel = stringResource(R.string.playlists_rename),
+                initialName = File(target.track.path).name,
+                takenNames = emptyList(),
+                onDismiss = finish,
+                onConfirm = { name ->
+                    onActionDone()
+                    viewModel.renameFile(target.track, name)
+                    finish()
+                },
+            )
+
+            else -> finish()
+        }
+
+        is FollowUp.PlaylistPicker -> {
+            val target = followUp.target
+            val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+            var fullPlaylistIds by remember { mutableStateOf(emptySet<Long>()) }
+            // Naming a new playlist opens over the picker rather than in its place, so cancelling the
+            // name goes back to the playlists that already exist, still holding the same tracks.
+            var isNamingNewPlaylist by remember { mutableStateOf(false) }
+            LaunchedEffect(target) { fullPlaylistIds = viewModel.playlistIdsHoldingAll(target) }
+            PlaylistPickerDialog(
+                title = stringResource(R.string.options_playlist_add),
+                playlists = playlists.itemsOrEmpty,
+                fullPlaylistIds = fullPlaylistIds,
+                onDismiss = finish,
+                onPlaylistSelected = { playlist ->
+                    onActionDone()
+                    viewModel.addToPlaylist(target, playlist.id)
+                    context.toast(context.getString(R.string.options_added_to_playlist))
+                    finish()
+                },
+                onNewPlaylistSelected = { isNamingNewPlaylist = true },
+            )
+            if (isNamingNewPlaylist) {
+                PlaylistNameDialog(
+                    dialogTitle = stringResource(R.string.library_new_playlist),
+                    confirmLabel = stringResource(R.string.library_create),
+                    initialName = "",
+                    takenNames = playlists.itemsOrEmpty.map { it.name },
+                    onDismiss = { isNamingNewPlaylist = false },
+                    onConfirm = { name ->
+                        onActionDone()
+                        viewModel.createPlaylistAndAddTo(target, name)
+                        context.toast(context.getString(R.string.options_added_to_playlist))
+                        finish()
+                    },
+                )
+            }
+        }
+
+        is FollowUp.Properties -> TrackPropertiesDialog(track = followUp.target.track, onDismiss = finish)
+
+        is FollowUp.ChooseArtist -> {
+            val navigator = LocalNavigator.current
+            ArtistPickerDialog(
+                artists = followUp.artists,
+                onDismiss = finish,
+                onArtistSelected = { artist ->
+                    onActionDone()
+                    finish()
+                    navigator.go(ArtistDetailScreen(artist.id))
+                },
+            )
+        }
+
+        is FollowUp.ExcludeFolder -> ExcludeFoldersDialog(
+            folderPaths = listOf(followUp.target.folder.path),
+            onDismiss = finish,
+            onConfirmed = onActionDone,
+        )
+
+        is FollowUp.DeletePlaylist -> DeletePlaylistsDialog(
+            playlists = listOf(followUp.target.playlist),
+            onDismiss = finish,
+            onConfirmed = onActionDone,
+            onDeleted = onCollectionDeleted,
+        )
+
+        is FollowUp.RemoveFromList -> RemoveFromListDialog(
+            list = followUp.list,
+            trackIds = listOf(followUp.target.track.id),
+            onDismiss = finish,
+            onConfirmed = onActionDone,
+        )
+
+        is FollowUp.AddToPrivate -> {
+            // Read as deleting reads them - a track, or a selection's - and the dialog opens on them once they are known.
+            var tracks by remember(followUp) { mutableStateOf<List<Track>?>(null) }
+            LaunchedEffect(followUp) {
+                viewModel.loadTracks(followUp.target) { loaded -> if (loaded.isEmpty()) finish() else tracks = loaded }
+            }
+            tracks?.let { loaded -> AddToPrivateDialog(tracks = loaded, onDismiss = finish, onConfirmed = onActionDone, onMoved = finish) }
+        }
+
+        is FollowUp.DeleteFromDevice -> {
+            // A collection's tracks are read first; the dialog opens on them once they are known.
+            var tracks by remember(followUp) { mutableStateOf<List<Track>?>(null) }
+            LaunchedEffect(followUp) {
+                viewModel.loadTracks(followUp.target) { loaded -> if (loaded.isEmpty()) finish() else tracks = loaded }
+            }
+            tracks?.let { loaded ->
+                DeleteFromDeviceDialog(
+                    tracks = loaded,
+                    onDismiss = finish,
+                    onConfirmed = onActionDone,
+                    onDeleted = {
+                        if (followUp.target !is OptionsTarget.ForTrack && followUp.target !is OptionsTarget.ForSelection) {
+                            onCollectionDeleted()
+                        }
+                    },
+                )
+            }
+        }
+
+        is FollowUp.ImportFile -> {
+            val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                finish()
+                if (uri != null) {
+                    onActionDone()
+                    viewModel.importIntoPlaylist(
+                        playlistId = followUp.target.playlist.id,
+                        openStream = { context.contentResolver.openInputStream(uri) },
+                    ) { succeeded ->
+                        context.toast(context.getString(if (succeeded) R.string.options_playlist_imported else R.string.options_playlist_import_failed))
+                    }
+                }
+            }
+            LaunchedEffect(followUp) { launcher.launch(M3U_PICKER_MIME_TYPES) }
+        }
+
+        is FollowUp.ExportFile -> {
+            val launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(M3U_MIME_TYPE)) { uri ->
+                finish()
+                if (uri != null) {
+                    onActionDone()
+                    viewModel.exportTracks(followUp.target) { context.contentResolver.openOutputStream(uri) }
+                }
+            }
+            val fileName = "${followUp.target.name()}.m3u"
+            LaunchedEffect(followUp) { launcher.launch(fileName) }
+        }
+    }
+}
+
+private fun artistIdsOf(target: OptionsTarget): List<Long> = when (target) {
+    is OptionsTarget.ForTrack -> target.track.artistIds
+    is OptionsTarget.ForAlbum -> target.album.artistIds
+    else -> error("$target has no artist to go to")
+}
+
+private fun albumIdOf(target: OptionsTarget): Long = when (target) {
+    is OptionsTarget.ForTrack -> target.track.albumId
+    else -> error("$target has no album to go to")
+}
+
+private fun detailScreenOf(target: OptionsTarget): Screen = when (target) {
+    is OptionsTarget.ForAlbum -> AlbumDetailScreen(target.album.id)
+    is OptionsTarget.ForArtist -> ArtistDetailScreen(target.artist.id)
+    is OptionsTarget.ForGenre -> GenreDetailScreen(target.genre.id)
+    is OptionsTarget.ForPlaylist -> PlaylistDetailScreen(target.playlist.id)
+    is OptionsTarget.ForFolder -> FolderDetailScreen(target.folder.path, target.folder.isVideo)
+    is OptionsTarget.ForTrack -> error("A track's own detail is Song properties, not View")
+    is OptionsTarget.ForSelection -> error("A selection has no detail screen of its own")
+}
+
+private fun playlistOf(target: OptionsTarget): OptionsTarget.ForPlaylist =
+    target as? OptionsTarget.ForPlaylist ?: error("$target is not a playlist")
+
+/**
+ * Offers [track]'s audio to another app - the player's own share.
+ *
+ * A manually scanned track has only a file path, which another app is not allowed to open, so its title
+ * and artist are shared instead.
+ */
+private fun Context.shareTrack(track: Track) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        if (track.isManuallyScanned) {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, "${track.title} - ${track.artist}")
+        } else {
+            type = shareTypeOf(listOf(track))
+            putExtra(Intent.EXTRA_STREAM, track.contentUri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+    startActivity(Intent.createChooser(intent, null))
+}
+
+/**
+ * Offers every one of [tracks]' audio files to another app at once - Auxio's `Context.share` for a
+ * selection.
+ *
+ * Nothing is copied: a track is shared as its own address in the library, which the receiving app is
+ * granted a read of. So a selection costs the same whether it holds three tracks or three hundred,
+ * and the chooser opens on the same frame it is asked for.
+ *
+ * Manually scanned tracks are left out, having no address another app may open, and a selection that
+ * loses any of them says so rather than quietly sharing fewer than were picked. A selection too large
+ * for the intent to carry is turned down before it is sent - see [shareIntentCostBytes].
+ */
+private fun Context.shareTracks(tracks: List<Track>) {
+    val shared = tracks.filterNot(Track::isManuallyScanned)
+    val streams = shared.map(Track::contentUri)
+    if (streams.isEmpty()) {
+        toast(getString(R.string.options_share_failed))
+        return
+    }
+    if (streams.shareIntentCostBytes() > SHARE_INTENT_BUDGET_BYTES) {
+        toast(getString(R.string.options_share_too_many))
+        return
+    }
+    val leftOutCount = tracks.size - streams.size
+    if (leftOutCount > 0) toast(resources.getQuantityString(R.plurals.options_tracks_not_shared, leftOutCount, leftOutCount))
+
+    val intent = if (streams.size == 1) {
+        Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, streams.single())
+    } else {
+        Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(streams))
+    }
+    intent.setType(shareTypeOf(shared)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    startActivity(Intent.createChooser(intent, null))
+}
+
+/**
+ * How much of the intent these streams will take up.
+ *
+ * A URI is parcelled as its characters in UTF-16, with a few bytes of type and length around them -
+ * and twice over, because the system copies `EXTRA_STREAM` into the ClipData it grants the read from
+ * before the intent is sent.
+ */
+private fun List<Uri>.shareIntentCostBytes(): Int =
+    sumOf { (it.toString().length * 2 + URI_PARCEL_OVERHEAD_BYTES) * 2 }
+
+/** The type and length a parcelled URI carries besides its characters. */
+private const val URI_PARCEL_OVERHEAD_BYTES = 16
+
+/**
+ * How large a share intent may grow. A Binder transaction has about a megabyte for everything in
+ * flight; half of it is the streams', leaving room for the rest of the intent and for the chooser's
+ * own reply.
+ *
+ * Counted before the intent is sent rather than caught afterwards: an intent over the limit usually
+ * fails on the far side of the transaction, in the system or in the app receiving it, so there is
+ * often nothing to catch here.
+ */
+private const val SHARE_INTENT_BUDGET_BYTES = 512 * 1024
+
+/** What [tracks] are shared as: audio, video, or - a selection holding both - either. */
+private fun shareTypeOf(tracks: List<Track>): String = when {
+    tracks.none(Track::isVideo) -> "audio/*"
+    tracks.all(Track::isVideo) -> "video/*"
+    else -> "*/*"
+}

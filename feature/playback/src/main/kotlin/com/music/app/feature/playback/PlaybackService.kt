@@ -1,0 +1,783 @@
+package com.music.app.feature.playback
+
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioManager
+import android.os.Build
+import android.os.Bundle
+import androidx.core.content.ContextCompat
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CommandButton
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
+import com.music.app.core.common.R as CommonR
+import com.music.app.core.common.di.ApplicationScope
+import com.music.app.core.common.entry.AppEntry
+import com.music.app.core.data.LibraryRepository
+import com.music.app.core.data.contentUri
+import com.music.app.core.database.dao.QueueItemDao
+import com.music.app.core.datastore.ImageSettings
+import com.music.app.core.datastore.PlaybackSettings
+import com.music.app.core.datastore.ShuffleSettings
+import com.music.app.core.downloader.LiveDownloads
+import com.music.app.core.model.RepeatMode
+import com.music.app.core.model.Track
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+
+/**
+ * Foreground [MediaSessionService] that owns the [ExoPlayer] instance and its [MediaSession].
+ *
+ * Hosting the player here (rather than in the UI process) gives us, for free, lock screen transport
+ * controls and headset button handling via `androidx.media3.session`.
+ *
+ * The notification itself is still rendered by media3, but through
+ * [MusicMediaNotificationProvider] rather than the bare default, so it carries Music's icon. Its own
+ * buttons follow ArchiveTune's design: [updateMediaButtons] rebuilds them from current state, and it is
+ * called from the player's state listeners rather than from the button handlers - a press only changes
+ * state, and the buttons follow. That indirection is what keeps a button's icon from ever disagreeing
+ * with the player.
+ */
+@AndroidEntryPoint
+@UnstableApi
+class PlaybackService : MediaSessionService() {
+
+    @Inject
+    lateinit var libraryRepository: LibraryRepository
+
+    @Inject
+    lateinit var playbackSettings: PlaybackSettings
+
+    @Inject
+    lateinit var shuffleSettings: ShuffleSettings
+
+    @Inject
+    lateinit var imageSettings: ImageSettings
+
+    @Inject
+    lateinit var queueItemDao: QueueItemDao
+
+    @Inject
+    lateinit var equalizer: MusicEqualizer
+
+    @Inject
+    lateinit var listenHistory: ListenHistory
+
+    @Inject
+    lateinit var trackFiles: TrackFiles
+
+    @Inject
+    lateinit var liveSources: LiveDownloadSources
+
+    @Inject
+    lateinit var liveDownloads: LiveDownloads
+
+    @Inject
+    lateinit var resumePositions: ResumePositions
+
+    @Inject
+    lateinit var playbackController: PlaybackController
+
+    @Inject
+    @ApplicationScope
+    lateinit var applicationScope: CoroutineScope
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private lateinit var exoPlayer: ExoPlayer
+    private lateinit var forwardingPlayer: PlaybackForwardingPlayer
+    private lateinit var mediaSession: MediaSession
+    private lateinit var playHistoryRecorder: PlayHistoryRecorder
+    private lateinit var resumePositionRecorder: ResumePositionRecorder
+
+    // Live-updated snapshots read synchronously from Player.Listener / the forwarding player -
+    // DataStore is Flow/suspend-based, so runtime changes are mirrored into these volatile fields
+    // rather than read on every call.
+    @Volatile private var forwardingSettings = PlaybackForwardingPlayer.Snapshot(
+        rememberPause = false,
+        rewindBeforeSkipBack = false,
+    )
+
+    // The player's repeat int cannot tell RepeatMode.ONE from STOP_AFTER_CURRENT apart, so the
+    // stored mode is what both the player and the notification are driven from.
+    @Volatile private var repeatMode: RepeatMode = RepeatMode.OFF
+
+    // Whether a screen working on the playing track holds it, repeating whatever the stored mode - see
+    // PlaybackController.holdCurrentTrack.
+    @Volatile private var isTrackHeld = false
+
+    @Volatile private var headsetAutoplayEnabled = false
+
+    // Mirrored into a field because the notification is rebuilt synchronously and cannot suspend to
+    // ask whether the playing track is a favorite.
+    @Volatile private var favoriteTrackIds: Set<Long> = emptySet()
+    private var initialHeadsetPlugEventHandled = false
+
+    // Whether the notification was swiped away since playback last started - see onUpdateNotification.
+    private var isNotificationDismissed = false
+
+    private val playerListener = object : Player.Listener {
+        // Every way of turning shuffle on - the player, the notification, another controller - arrives
+        // here. Left alone, the queue plays the order it was dealt when it was set, the same one each
+        // time shuffle comes back on. When the user reshuffles each time, a new order is dealt from the
+        // track playing instead, as all three reference players do.
+        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            if (shuffleModeEnabled && shuffleSettings.reshuffleEachTime.value) {
+                exoPlayer.setShuffleOrder(
+                    QueueShuffleOrder.startingFrom(exoPlayer.mediaItemCount, exoPlayer.currentMediaItemIndex),
+                )
+            }
+            updateMediaButtons()
+        }
+
+        // The heart belongs to the track, so it has to be redrawn when the track changes - and whether
+        // playback pauses at its end depends on whether it is a video.
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            updateMediaButtons()
+            applyRepeatMode(repeatMode)
+        }
+
+        // Whatever can change which track plays now or next.
+        override fun onEvents(player: Player, events: Player.Events) {
+            if (events.containsAny(
+                    Player.EVENT_MEDIA_ITEM_TRANSITION,
+                    Player.EVENT_TIMELINE_CHANGED,
+                    Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
+                    Player.EVENT_REPEAT_MODE_CHANGED,
+                )
+            ) {
+                holdTrackFiles()
+            }
+            // Whether there is a next - which the buttons' places follow - changes with the queue and the repeat mode.
+            if (events.containsAny(Player.EVENT_AVAILABLE_COMMANDS_CHANGED, Player.EVENT_REPEAT_MODE_CHANGED)) updateMediaButtons()
+        }
+    }
+
+    private val headsetReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                AudioManager.ACTION_HEADSET_PLUG -> {
+                    when (intent.getIntExtra("state", -1)) {
+                        0 -> pauseFromHeadsetPlug()
+                        1 -> playFromHeadsetPlug()
+                    }
+                    initialHeadsetPlugEventHandled = true
+                }
+
+                AudioManager.ACTION_AUDIO_BECOMING_NOISY -> pauseFromHeadsetPlug()
+            }
+        }
+    }
+
+    private val sessionCallback = object : MediaSession.Callback {
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult {
+            val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
+                .buildUpon()
+                .add(PlaybackSessionCommands.toggleFavoriteCommand)
+                .add(PlaybackSessionCommands.toggleShuffleCommand)
+                .add(PlaybackSessionCommands.toggleRepeatModeCommand)
+                .add(PlaybackSessionCommands.playNextCommand)
+                .add(PlaybackSessionCommands.addToQueueCommand)
+                .add(PlaybackSessionCommands.restoreShuffleOrderCommand)
+                .add(PlaybackSessionCommands.moveQueueItemCommand)
+                .add(PlaybackSessionCommands.restoreQueueItemCommand)
+                .add(PlaybackSessionCommands.removeQueueItemCommand)
+                .add(PlaybackSessionCommands.removeTracksCommand)
+                .add(PlaybackSessionCommands.holdTrackCommand)
+                .add(PlaybackSessionCommands.skipCommand)
+                .build()
+            return MediaSession.ConnectionResult.accept(
+                sessionCommands,
+                MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS,
+            )
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> {
+            // Each branch only changes state. Nothing here touches the notification - the
+            // resulting player callback does, via updateMediaButtons().
+            when (customCommand.customAction) {
+                PlaybackSessionCommands.ACTION_TOGGLE_FAVORITE -> toggleFavorite()
+
+                PlaybackSessionCommands.ACTION_TOGGLE_SHUFFLE -> toggleShuffle()
+
+                PlaybackSessionCommands.ACTION_TOGGLE_REPEAT_MODE -> toggleRepeatMode()
+
+                PlaybackSessionCommands.ACTION_PLAY_NEXT ->
+                    enqueue(args.getLongArray(PlaybackSessionCommands.EXTRA_TRACK_IDS) ?: LongArray(0), playNext = true)
+
+                PlaybackSessionCommands.ACTION_ADD_TO_QUEUE ->
+                    enqueue(args.getLongArray(PlaybackSessionCommands.EXTRA_TRACK_IDS) ?: LongArray(0), playNext = false)
+
+                PlaybackSessionCommands.ACTION_RESTORE_SHUFFLE_ORDER ->
+                    restoreShuffleOrder(args.getIntArray(PlaybackSessionCommands.EXTRA_SHUFFLE_ORDER))
+
+                PlaybackSessionCommands.ACTION_MOVE_QUEUE_ITEM ->
+                    moveQueueItem(
+                        fromPosition = args.getInt(PlaybackSessionCommands.EXTRA_FROM_POSITION),
+                        toPosition = args.getInt(PlaybackSessionCommands.EXTRA_TO_POSITION),
+                    )
+
+                PlaybackSessionCommands.ACTION_RESTORE_QUEUE_ITEM ->
+                    restoreQueueItem(
+                        trackId = args.getLong(PlaybackSessionCommands.EXTRA_TRACK_ID),
+                        mediaItemIndex = args.getInt(PlaybackSessionCommands.EXTRA_MEDIA_ITEM_INDEX),
+                        playPosition = args.getInt(PlaybackSessionCommands.EXTRA_PLAY_POSITION),
+                    )
+
+                PlaybackSessionCommands.ACTION_REMOVE_QUEUE_ITEM ->
+                    removeQueueItem(args.getInt(PlaybackSessionCommands.EXTRA_MEDIA_ITEM_INDEX))
+
+                PlaybackSessionCommands.ACTION_REMOVE_TRACKS ->
+                    removeTracks(args.getLongArray(PlaybackSessionCommands.EXTRA_TRACK_IDS) ?: LongArray(0))
+
+                PlaybackSessionCommands.ACTION_HOLD_TRACK -> {
+                    isTrackHeld = args.getBoolean(PlaybackSessionCommands.EXTRA_HOLD)
+                    applyRepeatMode(repeatMode)
+                }
+
+                PlaybackSessionCommands.ACTION_SKIP ->
+                    args.getString(PlaybackSessionCommands.EXTRA_SKIP)?.let { forwardingPlayer.skip(TrackSkip.valueOf(it)) }
+
+                else -> return super.onCustomCommand(session, controller, customCommand, args)
+            }
+            return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+        }
+
+        // Ported from Fossify's MediaSessionCallback.onPlaybackResumption: lets a media button
+        // (e.g. a headset's play button) start the service and resume the last queue even when
+        // no MediaController - and so no PlaybackController - is around to restore it, because
+        // nothing in the app process runs before this fires. Reads the same queue table
+        // PlaybackController restores from on a normal app launch.
+        override fun onPlaybackResumption(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val future = SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+            serviceScope.launch {
+                val savedQueue = loadSavedQueue(queueItemDao, libraryRepository, playbackSettings.playbackParent.value)
+                if (savedQueue == null) {
+                    future.setException(UnsupportedOperationException())
+                    return@launch
+                }
+                restoreShuffleOrder(savedQueue.shuffleOrder)
+                future.set(
+                    MediaSession.MediaItemsWithStartPosition(
+                        savedQueue.mediaItems,
+                        savedQueue.currentIndex,
+                        savedQueue.startPositionMs,
+                    ),
+                )
+            }
+            return future
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+
+        // The settings the player and session are built with, read straight from memory: the
+        // application loaded every setting before any service could be created (see
+        // SettingsLoader), so the player starts configured rather than being corrected later.
+        forwardingSettings = PlaybackForwardingPlayer.Snapshot(
+            rememberPause = playbackSettings.rememberPause.value,
+            rewindBeforeSkipBack = playbackSettings.rewindBeforeSkipBack.value,
+        )
+        headsetAutoplayEnabled = playbackSettings.headsetAutoplay.value
+        repeatMode = playbackSettings.repeatMode.value
+
+        // Every file is on the device, read far faster than it plays: playback starts, and resumes after a seek, as
+        // soon as a moment of it is in, rather than after the seconds a stream from the network would wait for.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs = */ 15_000,
+                /* maxBufferMs = */ 30_000,
+                /* bufferForPlaybackMs = */ 250,
+                /* bufferForPlaybackAfterRebufferMs = */ 500,
+            )
+            .build()
+        exoPlayer = ExoPlayer.Builder(this, musicRenderersFactory(this))
+            .setLoadControl(loadControl)
+            // Every file read through [trackFiles], so one changed while it plays reads on unchanged - and a download, as it
+            // downloads, through [liveSources].
+            .setMediaSourceFactory(
+                trackFiles.dataSourceFactory(liveSources.dataSourceFactory(DefaultDataSource.Factory(this))).let { files ->
+                    liveSources.mediaSourceFactory(DefaultMediaSourceFactory(files), files)
+                },
+            )
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .build(),
+                /* handleAudioFocus = */ true,
+            )
+            .setWakeMode(C.WAKE_MODE_LOCAL)
+            .build()
+            .apply {
+                // Nothing here shows a picture: a video heard in the queue decodes its sound alone. See VideoPlayback.
+                trackSelectionParameters = trackSelectionParameters.buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+                    .build()
+                shuffleModeEnabled = shuffleSettings.enabled.value
+                setShuffleOrder(QueueShuffleOrder())
+                addListener(playerListener)
+            }
+
+        // Bound here rather than in the UI because the session id is the player's, and the
+        // curve has to keep applying while no screen is open.
+        equalizer.attach(exoPlayer.audioSessionId)
+
+        // On the player itself, so a listen is recorded however it was started and with no screen open.
+        playHistoryRecorder = PlayHistoryRecorder(exoPlayer, serviceScope, listenHistory, playbackSettings).also { it.attach() }
+        serviceScope.launch { exoPlayer.followLiveDownloads(liveDownloads) }
+        resumePositionRecorder = ResumePositionRecorder(exoPlayer, resumePositions).also { it.attach() }
+
+        forwardingPlayer = PlaybackForwardingPlayer(exoPlayer) { forwardingSettings }
+
+        mediaSession = MediaSession.Builder(this, forwardingPlayer)
+            .setCallback(sessionCallback)
+            .setSessionActivity(AppEntry.AS_LEFT.pendingIntent(this))
+            // Artwork falls back to the default cover exactly where the app's own covers do.
+            .setBitmapLoader(DefaultCoverBitmapLoader(this, imageSettings))
+            .build()
+
+        setMediaNotificationProvider(
+            MusicMediaNotificationProvider(
+                context = this,
+                smallIconResId = CommonR.drawable.ic_stat_music,
+            ),
+        )
+
+        updateMediaButtons()
+        applyRepeatMode(repeatMode)
+        registerHeadsetReceiver()
+        collectRuntimeSettings()
+    }
+
+    // Swipe-to-dismiss is routed here by MusicMediaNotificationProvider so the queue can be dropped
+    // rather than left behind for a session the user has just dismissed, then the original media3
+    // delete intent is forwarded so its own teardown still happens.
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_MEDIA_NOTIFICATION_DISMISSED) {
+            handleMediaNotificationDismissed(intent)
+            return START_NOT_STICKY
+        }
+        return super.onStartCommand(intent, flags, startId)
+    }
+
+    private fun handleMediaNotificationDismissed(intent: Intent) {
+        isNotificationDismissed = true
+        val originalDeleteIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(EXTRA_MEDIA_NOTIFICATION_DELETE_INTENT, PendingIntent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(EXTRA_MEDIA_NOTIFICATION_DELETE_INTENT)
+        }
+        runCatching { originalDeleteIntent?.send() }
+    }
+
+    /**
+     * Rebuilds the session's own buttons - repeat, shuffle and favorite - from current player state, for
+     * everything that shows them: the notification, the system's media controls, a car or a watch.
+     *
+     * Always in this order, after the transport buttons. Where there is no next - a track repeating, or the
+     * queue's last - repeat takes the place next leaves, so shuffle and the heart still both show: media3 puts a
+     * button in next's place whenever it is asked to, next or not, so it is asked to only then.
+     */
+    private fun updateMediaButtons() {
+        // As the session's player has them - next hidden while a track repeats - not as the player it wraps has them.
+        val takesNextsPlace = !forwardingPlayer.availableCommands.contains(Player.COMMAND_SEEK_TO_NEXT)
+        mediaSession.setMediaButtonPreferences(
+            listOf(buildRepeatCommandButton(takesNextsPlace), buildShuffleCommandButton(), buildFavoriteCommandButton()),
+        )
+    }
+
+    // Deviation from ArchiveTune, which mutates the player and nothing else: Music persists shuffle
+    // and repeat, so a toggle from the notification has to reach PlaybackSettings too or the choice
+    // would be forgotten on the next launch.
+    private fun toggleShuffle() {
+        val enabled = !exoPlayer.shuffleModeEnabled
+        exoPlayer.shuffleModeEnabled = enabled
+        serviceScope.launch { shuffleSettings.setEnabled(enabled) }
+    }
+
+    /**
+     * Has the saved queue about to be set on the empty player play in [order], the order it was
+     * shuffled in when the app closed - when the user keeps that order. Restored whether or not
+     * shuffle is on, so turning it on later still brings back the order the queue had.
+     *
+     * Sent ahead of the queue rather than after it: media3 runs a custom command at once but queues
+     * player commands behind each other, so an order sent after the queue could arrive before it.
+     */
+    private fun restoreShuffleOrder(order: IntArray?) {
+        if (order == null || !shuffleSettings.rememberOrder.value) return
+        if (exoPlayer.mediaItemCount != 0) return
+        exoPlayer.setShuffleOrder(QueueShuffleOrder.restoring(order))
+    }
+
+    /**
+     * Moves the track at [fromPosition] of the queue, in the order it plays, to [toPosition] - what the
+     * queue's list shows, shuffled or not. Unshuffled, that order is the player's own; shuffled, it is the
+     * shuffle order, rearranged, and the player's own order stays as it was.
+     */
+    private fun moveQueueItem(fromPosition: Int, toPosition: Int) {
+        val count = exoPlayer.mediaItemCount
+        if (fromPosition !in 0 until count || toPosition !in 0 until count) return
+        if (!exoPlayer.shuffleModeEnabled) {
+            exoPlayer.moveMediaItem(fromPosition, toPosition)
+            return
+        }
+        val order = playOrder()
+        order.add(toPosition, order.removeAt(fromPosition))
+        exoPlayer.setShuffleOrder(QueueShuffleOrder.of(order.toIntArray()))
+    }
+
+    /**
+     * Puts the track [trackId] names back exactly where it was taken from: at [mediaItemIndex] in the
+     * player's own order and, shuffled, at [playPosition] in the order the queue plays - where adding it
+     * alone would file it beside whichever track now follows its index.
+     *
+     * Shuffled, the order is armed with that place before the track is added, so the queue changes once,
+     * with the track already where it belongs - arming it changes nothing that plays.
+     */
+    private fun restoreQueueItem(trackId: Long, mediaItemIndex: Int, playPosition: Int) {
+        val track = libraryRepository.tracksById.value[trackId] ?: return
+        if (exoPlayer.shuffleModeEnabled) {
+            exoPlayer.setShuffleOrder(QueueShuffleOrder.insertingAt(playOrder().toIntArray(), playPosition))
+        }
+        exoPlayer.addMediaItem(mediaItemIndex.coerceIn(0, exoPlayer.mediaItemCount), track.toMediaItem())
+    }
+
+    private fun removeQueueItem(mediaItemIndex: Int) {
+        if (mediaItemIndex in 0 until exoPlayer.mediaItemCount) exoPlayer.removeMediaItem(mediaItemIndex)
+    }
+
+    /**
+     * Takes every copy of the tracks [trackIds] name out of the queue - last to first, so each removal
+     * leaves the indices still to visit where they were.
+     */
+    private fun removeTracks(trackIds: LongArray) {
+        for (index in exoPlayer.mediaItemCount - 1 downTo 0) {
+            val trackId = exoPlayer.getMediaItemAt(index).mediaId.toLongOrNull() ?: continue
+            if (trackId in trackIds) exoPlayer.removeMediaItem(index)
+        }
+    }
+
+    /** Tells [trackFiles] which files the player holds a track of. */
+    private fun holdTrackFiles() {
+        trackFiles.hold("music", exoPlayer.heldFileUris())
+    }
+
+    /**
+     * Keeps the queue what the library says it is, whatever changed under it: a track no longer in the library leaves
+     * the queue, the next playing in its place, and every other shows its title, artist, album and cover as the library
+     * now has them - what the notification, the lock screen and every other controller show.
+     *
+     * A file with a new address - moved or renamed - is opened there, the one playing going on from where it was.
+     * Every other change is made in place, and all at once: the files are the same, so nothing that plays is
+     * interrupted, and the queue changes once however many of its tracks did. A Private Folder item is no track of
+     * the library's, and is left alone.
+     *
+     * An item is its track by id, or else by its file: one whose id went, with another's track now at that very
+     * address, plays on as that track.
+     */
+    private fun followLibrary(tracksById: Map<Long, Track>) {
+        val tracksByAddress by lazy { tracksById.values.associateBy { it.contentUri } }
+        fun trackOf(queued: MediaItem): Track? {
+            val trackId = queued.mediaId.toLongOrNull() ?: return null
+            return tracksById[trackId] ?: tracksByAddress[queued.localConfiguration?.uri]
+        }
+        for (index in exoPlayer.mediaItemCount - 1 downTo 0) {
+            val queued = exoPlayer.getMediaItemAt(index)
+            if (queued.mediaId.toLongOrNull() != null && trackOf(queued) == null) exoPlayer.removeMediaItem(index)
+        }
+        val queue = List(exoPlayer.mediaItemCount, exoPlayer::getMediaItemAt)
+        val refreshed = queue.map { queued ->
+            val current = trackOf(queued)?.toMediaItem(queued.playbackParent)
+            val isUnchanged = current == null ||
+                (current.mediaId == queued.mediaId && current.hasAddressOf(queued) && current.mediaMetadata.isShownAs(queued.mediaMetadata))
+            if (isUnchanged) queued else current
+        }
+        reopenMovedItems(queue, refreshed)
+        if (refreshed.indices.any { refreshed[it] !== queue[it] }) exoPlayer.replaceMediaItems(0, queue.size, refreshed)
+    }
+
+    /**
+     * Opens each item of [refreshed] whose address is no longer the one in [queue] at its new one, one by one - the
+     * player can change only those without touching the rest - keeping the order the queue plays in and, for the one
+     * playing, where it was.
+     */
+    private fun reopenMovedItems(queue: List<MediaItem>, refreshed: List<MediaItem>) {
+        val moved = refreshed.indices.filterNot { refreshed[it].hasAddressOf(queue[it]) }
+        if (moved.isEmpty()) return
+        val currentIndex = exoPlayer.currentMediaItemIndex
+        val currentPosition = exoPlayer.currentPosition
+        val shuffleOrder = if (exoPlayer.shuffleModeEnabled) playOrder() else null
+        moved.forEach { exoPlayer.replaceMediaItem(it, refreshed[it]) }
+        shuffleOrder?.let { exoPlayer.setShuffleOrder(QueueShuffleOrder.of(it.toIntArray())) }
+        if (currentIndex in moved) exoPlayer.seekTo(currentIndex, currentPosition)
+    }
+
+    /** The queue's indices in the order it plays - the shuffle order while shuffling. */
+    private fun playOrder(): MutableList<Int> {
+        val timeline = exoPlayer.currentTimeline
+        val shuffled = exoPlayer.shuffleModeEnabled
+        val order = ArrayList<Int>(timeline.windowCount)
+        var index = timeline.getFirstWindowIndex(shuffled)
+        while (index != C.INDEX_UNSET) {
+            order += index
+            index = timeline.getNextWindowIndex(index, Player.REPEAT_MODE_OFF, shuffled)
+        }
+        return order
+    }
+
+    /**
+     * Puts the tracks named by [trackIds] in the queue once each - right after the current track when
+     * [playNext], at the end otherwise - in the order given.
+     *
+     * A track already queued moves there rather than playing twice, wherever its copy was, played or
+     * not; the track playing now is left where it is. Done here, on the player itself, because only
+     * the player knows the shuffle order that decides what "next" is.
+     */
+    private fun enqueue(trackIds: LongArray, playNext: Boolean) {
+        val currentMediaId = exoPlayer.currentMediaItem?.mediaId
+        val tracksById = libraryRepository.tracksById.value
+        val tracks = trackIds.distinct()
+            .mapNotNull { tracksById[it] }
+            .filter { it.id.toString() != currentMediaId }
+        if (tracks.isEmpty()) return
+
+        val movingMediaIds = tracks.mapTo(HashSet()) { it.id.toString() }
+        fun isMoving(index: Int) =
+            index != exoPlayer.currentMediaItemIndex && exoPlayer.getMediaItemAt(index).mediaId in movingMediaIds
+        // Last to first, in runs, so each removal leaves the indices still to visit untouched.
+        var index = exoPlayer.mediaItemCount - 1
+        while (index >= 0) {
+            if (!isMoving(index)) {
+                index--
+                continue
+            }
+            val runEndExclusive = index + 1
+            while (index >= 0 && isMoving(index)) index--
+            exoPlayer.removeMediaItems(index + 1, runEndExclusive)
+        }
+
+        val insertionIndex = if (playNext) {
+            exoPlayer.currentTimeline
+                .getNextWindowIndex(exoPlayer.currentMediaItemIndex, Player.REPEAT_MODE_OFF, exoPlayer.shuffleModeEnabled)
+                .takeUnless { it == C.INDEX_UNSET }
+                ?: exoPlayer.mediaItemCount
+        } else {
+            exoPlayer.mediaItemCount
+        }
+        exoPlayer.addMediaItems(insertionIndex, tracks.map { it.toMediaItem() })
+    }
+
+    private fun toggleRepeatMode() {
+        // Only the stored mode is written; the collector above puts it on the player and redraws
+        // the notification, so this path is the same one the player screen takes.
+        serviceScope.launch { playbackSettings.cycleRepeatMode() }
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
+
+    /**
+     * Every post of the notification passes here. Swiped away while [PlaybackSettings.persistedPlaybackNotification] is
+     * off, it stays away - whatever the player does in the meantime - until playback starts again, or Android requires it
+     * shown, as for a media button's press. Media3 alone posts it again on the player's next change.
+     */
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        if (session.player.playWhenReady || startInForegroundRequired) isNotificationDismissed = false
+        if (isNotificationDismissed && !playbackSettings.persistedPlaybackNotification.value) return
+        super.onUpdateNotification(session, startInForegroundRequired)
+    }
+
+    /** Left to Android's way - on while playing, gone once not - unless the user asked for it to stop with the app. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (playbackSettings.exitsOnClose.value) pauseAllPlayersAndStopSelf() else super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onDestroy() {
+        unregisterReceiver(headsetReceiver)
+        playHistoryRecorder.detach()
+        resumePositionRecorder.detach()
+        serviceScope.cancel()
+        mediaSession.release()
+        // Before the player, while the audio session the effect is attached to still exists.
+        equalizer.release()
+        exoPlayer.release()
+        super.onDestroy()
+    }
+
+    private fun collectRuntimeSettings() {
+        serviceScope.launch {
+            combine(
+                playbackSettings.rememberPause.flow,
+                playbackSettings.rewindBeforeSkipBack.flow,
+            ) { rememberPause, rewindBeforeSkipBack ->
+                PlaybackForwardingPlayer.Snapshot(rememberPause, rewindBeforeSkipBack)
+            }.collect { forwardingSettings = it }
+        }
+        serviceScope.launch {
+            playbackSettings.repeatMode.flow.collect { mode ->
+                repeatMode = mode
+                applyRepeatMode(mode)
+                updateMediaButtons()
+            }
+        }
+        serviceScope.launch {
+            playbackSettings.headsetAutoplay.flow.collect { headsetAutoplayEnabled = it }
+        }
+        serviceScope.launch {
+            playbackController.playbackState.map { it.opensNowPlaying }.distinctUntilChanged().collect { opensNowPlaying ->
+                val entry = if (opensNowPlaying) AppEntry.NOW_PLAYING else AppEntry.AS_LEFT
+                mediaSession.setSessionActivity(entry.pendingIntent(this@PlaybackService))
+                // The notification takes its tap from the session as it is rebuilt.
+                updateMediaButtons()
+            }
+        }
+        // Only once it is read: a library not known yet says nothing of what the queue holds.
+        serviceScope.launch { libraryRepository.loadedTracksById.collect { tracksById -> tracksById?.let(::followLibrary) } }
+        serviceScope.launch {
+            libraryRepository.favoriteTrackIds.collect {
+                favoriteTrackIds = it
+                updateMediaButtons()
+            }
+        }
+    }
+
+    /**
+     * Puts a repeat mode on the player.
+     *
+     * `pauseAtEndOfMediaItems` is what separates "repeat this track" from "play it once more, then
+     * stop" - media3 already knows how to pause at the end of an item, so unlike the reference app
+     * this needs no hand-written seek-and-pause when the track comes round. A held track repeats whatever the mode.
+     */
+    private fun applyRepeatMode(mode: RepeatMode) {
+        exoPlayer.repeatMode = if (isTrackHeld) Player.REPEAT_MODE_ONE else mode.toPlayerRepeatMode()
+        exoPlayer.pauseAtEndOfMediaItems = !isTrackHeld && mode.stopsAfterCurrentTrack()
+    }
+
+    private fun registerHeadsetReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(AudioManager.ACTION_HEADSET_PLUG)
+            addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+        }
+        ContextCompat.registerReceiver(this, headsetReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+    }
+
+    private fun playFromHeadsetPlug() {
+        // ACTION_HEADSET_PLUG fires once immediately on receiver registration with the current
+        // plug state - drop that first call, otherwise a headset already plugged in when the
+        // service starts would auto-resume playback unexpectedly (ported from Auxio's
+        // `initialHeadsetPlugEventHandled` guard).
+        if (headsetAutoplayEnabled && exoPlayer.currentMediaItem != null && initialHeadsetPlugEventHandled) {
+            exoPlayer.play()
+        }
+    }
+
+    private fun pauseFromHeadsetPlug() {
+        // Unlike the resume-on-plug-in behavior above, pause-on-unplug/noisy is unconditional -
+        // it is not gated by any setting, matching Auxio.
+        if (exoPlayer.currentMediaItem != null) {
+            exoPlayer.pause()
+        }
+    }
+
+    private fun currentTrackId(): Long? = exoPlayer.currentMediaItem?.mediaId?.toLongOrNull()
+
+    private fun toggleFavorite() {
+        val trackId = currentTrackId() ?: return
+        val isFavorite = trackId in favoriteTrackIds
+        // Only the write happens here; the icon follows from the favorites flow re-emitting, the
+        // same way the shuffle and repeat icons follow their player callbacks.
+        serviceScope.launch { libraryRepository.setFavorite(trackId, !isFavorite) }
+    }
+
+    /**
+     * The heart, always present and always in the same place.
+     *
+     * Ported from ArchiveTune's like button: it carries no slot, and is disabled rather than hidden
+     * while nothing is loaded, matching `.setEnabled(currentSong.value != null)`.
+     */
+    private fun buildRepeatCommandButton(takesNextsPlace: Boolean): CommandButton =
+        CommandButton.Builder(
+            when (repeatMode) {
+                RepeatMode.STOP_AFTER_CURRENT, RepeatMode.ONE -> CommandButton.ICON_REPEAT_ONE
+                RepeatMode.ALL -> CommandButton.ICON_REPEAT_ALL
+                RepeatMode.OFF -> CommandButton.ICON_REPEAT_OFF
+            },
+        )
+            .setDisplayName(getString(repeatMode.labelRes))
+            .setCustomIconResId(repeatMode.iconRes)
+            .setSessionCommand(PlaybackSessionCommands.toggleRepeatModeCommand)
+            .apply { if (takesNextsPlace) setSlots(CommandButton.SLOT_FORWARD) }
+            .build()
+
+    private fun buildShuffleCommandButton(): CommandButton {
+        val isShuffled = exoPlayer.shuffleModeEnabled
+        return CommandButton.Builder(if (isShuffled) CommandButton.ICON_SHUFFLE_ON else CommandButton.ICON_SHUFFLE_OFF)
+            .setDisplayName(getString(if (isShuffled) R.string.playback_action_shuffle_off else R.string.playback_action_shuffle_on))
+            .setCustomIconResId(if (isShuffled) CommonR.drawable.icon_shuffle_on else CommonR.drawable.icon_shuffle)
+            .setSessionCommand(PlaybackSessionCommands.toggleShuffleCommand)
+            .build()
+    }
+
+    private fun buildFavoriteCommandButton(): CommandButton {
+        val trackId = currentTrackId()
+        val isFavorite = trackId?.let { it in favoriteTrackIds } == true
+        return CommandButton.Builder(if (isFavorite) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
+            .setDisplayName(
+                getString(
+                    if (isFavorite) {
+                        R.string.playback_action_remove_favorite
+                    } else {
+                        R.string.playback_action_add_favorite
+                    },
+                ),
+            )
+            .setSessionCommand(PlaybackSessionCommands.toggleFavoriteCommand)
+            .setCustomIconResId(if (isFavorite) CommonR.drawable.icon_favorite else CommonR.drawable.icon_favorite_border)
+            .setEnabled(trackId != null)
+            .build()
+    }
+
+    companion object {
+        const val ACTION_MEDIA_NOTIFICATION_DISMISSED =
+            "com.music.app.playback.action.MEDIA_NOTIFICATION_DISMISSED"
+        const val EXTRA_MEDIA_NOTIFICATION_DELETE_INTENT =
+            "com.music.app.playback.extra.MEDIA_NOTIFICATION_DELETE_INTENT"
+    }
+}

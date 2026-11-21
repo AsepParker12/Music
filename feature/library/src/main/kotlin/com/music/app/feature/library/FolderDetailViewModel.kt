@@ -1,0 +1,51 @@
+package com.music.app.feature.library
+
+import androidx.lifecycle.viewModelScope
+import com.music.app.core.data.LibraryContent
+import com.music.app.core.data.LibraryRepository
+import com.music.app.core.data.itemsOrEmpty
+import com.music.app.core.data.sort.LibrarySortOrders
+import com.music.app.core.model.Folder
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.Track
+import com.music.app.core.model.sort.SortableList
+import com.music.app.feature.library.sort.SortControl
+import com.music.app.feature.library.sort.control
+import com.music.app.feature.playback.PlaybackController
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedFactory
+import dagger.assisted.AssistedInject
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+
+@HiltViewModel(assistedFactory = FolderDetailViewModel.Factory::class)
+class FolderDetailViewModel @AssistedInject constructor(
+    @Assisted private val folderPath: String,
+    @Assisted private val isVideo: Boolean,
+    repository: LibraryRepository,
+    sortOrders: LibrarySortOrders,
+    playbackController: PlaybackController,
+) : TrackListDetailViewModel(playbackController, repository) {
+
+    @AssistedFactory
+    interface Factory {
+        fun create(folderPath: String, isVideo: Boolean): FolderDetailViewModel
+    }
+
+    override val playbackParent: PlaybackParent = PlaybackParent.Folder(folderPath, isVideo)
+
+    val folderName: String = folderPath.substringAfterLast('/')
+
+    /** The folder this screen shows, as its own menu acts on it - null until the library has it. */
+    val folder: StateFlow<Folder?> = (if (isVideo) repository.videoFolders else repository.folders)
+        .map { content -> content.itemsOrEmpty.firstOrNull { it.path == folderPath } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    override val tracks: StateFlow<LibraryContent<Track>> = repository.folderTracks(folderPath, isVideo)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LibraryContent.Loading)
+
+    override val sort: SortControl = sortOrders.control(SortableList.FOLDER_TRACKS, folderPath)
+}

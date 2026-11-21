@@ -1,0 +1,511 @@
+package com.music.app.feature.library
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.res.pluralStringResource
+import com.music.app.core.data.itemsOrNull
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.datastore.LibraryTab
+import com.music.app.core.designsystem.component.LaunchOrder
+import com.music.app.core.designsystem.component.LaunchRise
+import com.music.app.core.designsystem.component.LaunchTitleShift
+import com.music.app.core.designsystem.component.SelectionState
+import com.music.app.core.designsystem.component.MusicMark
+import com.music.app.core.designsystem.component.MusicTabPager
+import com.music.app.core.designsystem.component.MusicTabRow
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.TopBarSearch
+import com.music.app.core.designsystem.component.header.collapsingHeader
+import com.music.app.core.designsystem.component.header.collapsingHeaderDrag
+import com.music.app.core.designsystem.component.header.rememberCollapsingHeaderState
+import com.music.app.core.designsystem.component.launchEntrance
+import com.music.app.core.designsystem.component.launchEntranceMark
+import com.music.app.core.designsystem.component.rememberSelectionState
+import com.music.app.core.designsystem.component.screen.PlayingRowReveal
+import com.music.app.core.designsystem.component.header.collapsingHeaderTail
+import com.music.app.core.designsystem.component.liftedTopBarBackground
+import com.music.app.core.designsystem.component.rememberTopBarLift
+import com.music.app.core.designsystem.icon.MusicIcons
+import com.music.app.core.designsystem.theme.MusicComponentStyle
+import com.music.app.feature.library.R
+import com.music.app.feature.library.operation.ExcludeFoldersDialog
+import com.music.app.feature.library.options.OptionsAction
+import com.music.app.feature.library.options.label
+import com.music.app.feature.library.quickplay.QuickPlayButton
+import com.music.app.feature.library.selection.SelectionKey
+import com.music.app.feature.library.selection.SelectionOptionsHost
+import com.music.app.feature.library.selection.toLibraryTopBarSelection
+import com.music.app.feature.library.sort.SortSheet
+import com.music.app.feature.library.tabs.label
+import com.music.app.feature.vault.rememberPrivateFolderOpener
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.launch
+
+/**
+ * The library's whole tab experience: the top app bar, a rounded swipeable tab strip beneath it, and
+ * the paged content. This is the single entry point `:app` needs - it owns tab selection, tab
+ * visibility and row selection internally, leaving the bottom of the screen entirely free for the
+ * expandable player.
+ *
+ * The bar lives here rather than in the host's scaffold because it has to turn into a context bar
+ * when a tab has rows selected, and only this screen knows which tab that is. [actions] is what the
+ * shell contributes to the ordinary bar.
+ *
+ * All five tabs share one [LibraryViewModel], which in turn reads lists that
+ * [com.music.app.core.data.LibraryRepository] has already computed once for the whole process.
+ * "Opening" a tab therefore costs a composition and nothing else - no query, no sort - which is why
+ * they can all exist at once without competing for the launch frame.
+ *
+ * [onChooseQuickPlaySource] opens where the quick play button's source is chosen, which the shell knows.
+ *
+ * [playingTab] opens the library on that tab - while it is shown - at its playing row once the tab is in, the full
+ * player over it - see [IntentNavigator.arriveAt][com.music.app.core.navigation.IntentNavigator.arriveAt].
+ * [tabRequest] slides it to its tab, while that is shown, as a tap on the tab does.
+ */
+@Composable
+fun LibraryPagerScreen(
+    onChooseQuickPlaySource: () -> Unit,
+    onOpenDownloads: () -> Unit,
+    onOpenAbout: () -> Unit,
+    modifier: Modifier = Modifier,
+    actions: List<TopBarAction> = emptyList(),
+    playingTab: LibraryTab? = null,
+    tabRequest: LibraryTabRequest? = null,
+    viewModel: LibraryViewModel = hiltViewModel(),
+) {
+    val visibleTabs by viewModel.visibleTabs.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    // Not paused with the activity, as the rest is: it is changed from another screen - the settings - and is
+    // then already there for the first frame back, rather than arriving just after it.
+    val quickPlay by viewModel.quickPlay.collectAsState()
+    val showsDownloadsButton by viewModel.showsDownloadsButton.collectAsState()
+    val hasTracks by viewModel.hasTracks.collectAsStateWithLifecycle()
+    val isFirstScan by viewModel.isFirstScan.collectAsStateWithLifecycle()
+    val revealsPrivateFolder by viewModel.revealsPrivateFolder.collectAsStateWithLifecycle()
+    val openPrivateFolder = rememberPrivateFolderOpener()
+    if (visibleTabs.isEmpty()) return
+
+    // Keyed on which tabs are shown, not their order: one shown or hidden resets the pager to the first tab - a settings
+    // change rare enough that starting over is the simplest correct behaviour - while a reorder keeps everything as it is.
+    key(visibleTabs.toSet()) {
+        val pagerState = rememberPagerState(pageCount = { visibleTabs.size })
+        val tabTitles = visibleTabs.map { it.label }
+        val selection = rememberSelectionState()
+        val scope = rememberCoroutineScope()
+
+        // A tab dragged along the strip leaves the one on screen on screen, at its new place. Which tab that is was read
+        // as it was let go - its page and the order still agreeing then, as the pager may follow the new order by itself
+        // before this does. Moved to before anything is laid out, so the strip's pill is on it in the very frame the strip
+        // takes the new order.
+        var followedTab by remember { mutableStateOf<FollowedTab?>(null) }
+        SideEffect {
+            val followed = followedTab
+            if (followed != null && followed.order != visibleTabs) {
+                pagerState.requestScrollToPage(visibleTabs.indexOf(followed.tab))
+                followedTab = null
+            }
+        }
+
+        // Each tab's list position, held here rather than inside the list so a tap on the tab can
+        // reach it. Saved, so a list keeps its place across a configuration change as before - and,
+        // remembered in a fixed order rather than the strip's, across a reorder.
+        val listStates = LibraryTab.entries.associateWith { rememberLazyListState() }
+
+        // The shortcuts collapse as a detail screen's header does, over whichever tab is on screen: one
+        // collapse for every tab, as Auxio's app bar is one over its pager. Each tab's list drives it - see
+        // [LocalLibraryShortcutsHeader] - and a drag on the shortcuts drives the tab's list in turn.
+        val shortcutsHeader = rememberCollapsingHeaderState()
+
+        // The tab a tap asked for, held until the pager has actually come to rest on it. A swipe
+        // leaves this null: the pager is then its own authority and the strip simply follows it,
+        // so the two can never fight over which tab is selected.
+        var requestedPage by remember { mutableStateOf<Int?>(null) }
+
+        // The tab whose sort sheet is open. Held as the tab rather than a flag, so the sheet keeps
+        // sorting the tab it was opened over.
+        var sortingTab by remember { mutableStateOf<LibraryTab?>(null) }
+
+        // The selected folders waiting on the user to confirm excluding them.
+        var excludingFolders by remember { mutableStateOf<List<String>?>(null) }
+
+        // Where the pill sits while a tap is being carried out. The pager cannot be asked to slide
+        // the whole way across a long move - it teleports to a page near the target first - so the
+        // pill travels that distance itself, and the strip follows it rather than the pager for as
+        // long as [pillLeads]. A swipe therefore still reads the pager directly, with nothing in
+        // between to lag behind the finger.
+        val pillPosition = remember { Animatable(0f) }
+        // The pill glides on the theme's fast expressive spring, overshooting and settling onto its tab, while the pager
+        // beneath moves as quickly without the bounce - a page sliding past its place would read as a fault.
+        val pillMotion = MaterialTheme.motionScheme.fastSpatialSpec<Float>()
+        var pillLeads by remember { mutableStateOf(false) }
+
+        // Every suspending move lives here, in one place and in one order, which is what makes a tap
+        // reliable. `collectLatest` drops a move the moment a newer tab is tapped, so the last tap wins.
+        //
+        // The pill's starting point is read first, before the pager is touched: a long move teleports
+        // the pager to a page near the target on its very first step, and a pill that read the pager
+        // after that would leap straight there. A tap that interrupts a slide starts from the pill
+        // itself, so nothing the pager does can ever move the pill.
+        //
+        // The move itself is left to `animateScrollToPage`: it already jumps to within three pages of
+        // a distant target before animating the rest, so the slide stays smooth and short without
+        // ever composing every tab in between. It can still be interrupted - a list fling coming to
+        // rest re-snaps the pager, cancelling the move rather than letting it finish somewhere wrong.
+        // Watching `settledPage` turns that into an ordinary observation ("we came to rest on a page
+        // nobody asked for") and simply issues the move again, without needing to know what
+        // interrupted it.
+        //
+        // The pill keeps the lead until it has arrived and the pager has come to rest on the same tab,
+        // so handing the strip back to the pager changes nothing on screen.
+        LaunchedEffect(pagerState) {
+            snapshotFlow { requestedPage }
+                .filterNotNull()
+                .collectLatest { requested ->
+                    if (!pillLeads) {
+                        pillPosition.snapTo(pagerState.currentPage + pagerState.currentPageOffsetFraction)
+                        pillLeads = true
+                    }
+                    coroutineScope {
+                        launch { pillPosition.animateTo(requested.toFloat(), pillMotion) }
+                        snapshotFlow { pagerState.settledPage }
+                            .takeWhile { settled -> settled != requested && requestedPage == requested }
+                            .collectLatest { pagerState.animateScrollToPage(requested, animationSpec = TabMotion) }
+                    }
+                    requestedPage = null
+                    pillLeads = false
+                }
+        }
+
+        // A swipe outranks a tap still being carried out: the finger takes the pager, so the strip
+        // follows the finger at once and the tap's move is not issued again once the swipe settles.
+        LaunchedEffect(pagerState) {
+            pagerState.interactionSource.interactions
+                .filterIsInstance<DragInteraction.Start>()
+                .collect {
+                    requestedPage = null
+                    pillLeads = false
+                }
+        }
+
+        // Already there under the full player rather than slid to, and revealed in once the pager is at rest there.
+        var isRevealDue by rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(playingTab) {
+            val page = playingTab?.let(visibleTabs::indexOf)?.takeIf { it >= 0 } ?: return@LaunchedEffect
+            pagerState.scrollToPage(page)
+            snapshotFlow { pagerState.settledPage == page }.first { it }
+            isRevealDue = true
+        }
+        if (isRevealDue) PlayingRowReveal()
+
+        LaunchedEffect(tabRequest) {
+            tabRequest?.tab?.let(visibleTabs::indexOf)?.takeIf { it >= 0 }?.let { requestedPage = it }
+        }
+
+        val selectedTab = visibleTabs[pagerState.settledPage]
+
+        // The tab the strip is on, or already sliding to.
+        val destinationPage = requestedPage ?: pagerState.settledPage
+
+        // Back returns to the first tab - the one the library opens on - the way it would to a home screen,
+        // and only from there leaves the app. Composed before the bar, so a selection or a search,
+        // whose back handler the bar composes later, is still what a back press closes first.
+        BackHandler(enabled = destinationPage != 0) { requestedPage = 0 }
+
+        // One selection for every tab, as Auxio's is: rows picked on one tab stay picked on the next,
+        // so albums, artists and single tracks can be gathered into a single set of tracks.
+        SelectionOptionsHost(selection, barActions = listOf(OptionsAction.DELETE_FROM_DEVICE)) { openSelectionOptions, optionsBarActions ->
+            // Painted here rather than left to whatever hosts the screen: the bar and every row are
+            // `surface`, while a Scaffold fills with `background` - the same colour on most devices, but
+            // not on all, where the shortcuts and the tab strip would sit on a band of a different shade.
+            Box(
+                modifier = modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surface),
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // The bar, the shortcuts, the tabs and the list's header are one section, lifting as one: as far as the
+                    // shortcuts have collapsed over the list, frame by frame, and once the list on screen leaves its top.
+                    val lift = rememberTopBarLift(progress = { shortcutsHeader.fraction })
+                    Column(modifier = Modifier.liftedTopBarBackground(lift)) {
+                        MusicTopAppBar(
+                            drawsBackground = false,
+                            // The app's own label, so the bar reads exactly what the launcher does - "Music Debug"
+                            // on a debug build, which :app sets per build type.
+                            title = stringResource(LocalContext.current.applicationInfo.labelRes),
+                            // Where the launch screen's mark lands as the app opens - see LaunchEntrance.
+                            titleLeading = { MusicMark(modifier = Modifier.size(LibraryMarkSize).launchEntranceMark()) },
+                            titleStyle = WordmarkStyle,
+                            titleModifier = Modifier.launchEntrance(LaunchOrder.TITLE, fromStart = LaunchTitleShift),
+                            // Music's name, and its mark, are what open About.
+                            onTitleClick = onOpenAbout,
+                            actionsModifier = Modifier.launchEntrance(LaunchOrder.ACTIONS),
+                            // The library's own first, so they are the ones always drawn as icons, while the shell's
+                            // actions are the ones that can fold into the menu. Downloads only while it is turned on.
+                            actions = listOfNotNull(
+                                TopBarAction(label = stringResource(R.string.library_search), icon = MusicIcons.Search) {
+                                    viewModel.onSearchQueryChange("")
+                                },
+                                TopBarAction(label = stringResource(R.string.library_downloads), icon = MusicIcons.Download, onClick = onOpenDownloads)
+                                    .takeIf { showsDownloadsButton },
+                            ) + actions,
+                            // Sorting stays in the list's header beneath: a search narrows a tab, it does not reorder it.
+                            search = searchQuery?.let { query ->
+                                TopBarSearch(
+                                    query = query,
+                                    onQueryChange = { viewModel.onSearchQueryChange(it) },
+                                    onClose = { viewModel.onSearchQueryChange(null) },
+                                    // The secret code typed, the key to the Private Folder: it opens straight in, the
+                                    // code itself left behind in the field no longer than it takes to go.
+                                    actions = listOfNotNull(
+                                        TopBarAction(label = stringResource(R.string.library_private_folder), icon = MusicIcons.LockOpen) {
+                                            viewModel.openPrivateFolder(onOpened = openPrivateFolder)
+                                        }.takeIf { revealsPrivateFolder },
+                                    ),
+                                    // The keyboard's search key, as the padlock: the secret code typed opens the folder.
+                                    // Checked afresh, so a code searched for at once opens it before its padlock shows.
+                                    onSearch = { viewModel.openPrivateFolder(onOpened = openPrivateFolder) },
+                                )
+                            },
+                            selection = selection.toLibraryTopBarSelection(
+                                listKeys = { viewModel.selectableKeys(selectedTab) },
+                                // Delete from device next to Select all, out of the sheet - see SelectionOptionsHost.
+                                actions = optionsBarActions + excludeFolderActions(selection) { excludingFolders = it },
+                                onMoreOptions = openSelectionOptions,
+                            ),
+                        )
+
+                        // The gap down to the tabs collapses with the shortcuts, so collapsed the tabs sit right
+                        // under the bar.
+                        LibraryShortcuts(
+                            lift = lift,
+                            modifier = Modifier
+                                .collapsingHeader(shortcutsHeader)
+                                .collapsingHeaderDrag(
+                                    shortcutsHeader,
+                                    list = { listStates[visibleTabs[pagerState.currentPage]] },
+                                )
+                                .padding(
+                                    start = MusicComponentStyle.ContentHorizontalPadding,
+                                    end = MusicComponentStyle.ContentHorizontalPadding,
+                                    top = ShortcutsTopGap,
+                                    bottom = ShortcutsBottomGap,
+                                )
+                                .launchEntrance(LaunchOrder.SHORTCUTS, rise = LaunchRise),
+                        )
+
+                        if (visibleTabs.size > 1) {
+                            MusicTabRow(
+                                tabTitles = tabTitles,
+                                // Passed as a lambda so the swipe position is read inside the tab row, not
+                                // here - otherwise every frame of a swipe would recompose the pager below.
+                                selectedPosition = {
+                                    if (pillLeads) {
+                                        pillPosition.value
+                                    } else {
+                                        pagerState.currentPage + pagerState.currentPageOffsetFraction
+                                    }
+                                },
+                                // Tapping the tab already chosen takes its list back to the top instead,
+                                // opening the shortcuts as it goes.
+                                onTabClick = { page ->
+                                    if (page == destinationPage) {
+                                        scope.launch {
+                                            launch { shortcutsHeader.animateTo(collapsed = false) }
+                                            listStates.getValue(visibleTabs[page]).glideToTop()
+                                        }
+                                    } else {
+                                        requestedPage = page
+                                    }
+                                },
+                                modifier = Modifier
+                                    .padding(vertical = TabsVerticalPadding)
+                                    .launchEntrance(LaunchOrder.TABS, rise = LaunchRise),
+                                edgePadding = MusicComponentStyle.ContentHorizontalPadding,
+                                // Held and dragged, a tab takes another place - the first being where the library opens.
+                                onMoveTab = { from, to ->
+                                    followedTab = FollowedTab(visibleTabs[pagerState.settledPage], visibleTabs)
+                                    viewModel.moveTab(from, to)
+                                },
+                            )
+                        }
+
+                        // How much the tab being shown holds and how it is sorted - the one a tap or a swipe is going to,
+                        // from the moment it does. Its first scan shows here as it fills. It scrolls away with the list
+                        // once the shortcuts have collapsed.
+                        val headerTab = visibleTabs[pagerState.targetPage.coerceIn(visibleTabs.indices)]
+                        val headerContent by viewModel.contentOf(headerTab).collectAsStateWithLifecycle()
+                        LibraryListHeader(
+                            countLabel = headerContent.itemsOrNull?.size?.let { count -> pluralStringResource(headerTab.countPlural, count, count) },
+                            sort = viewModel.sort(headerTab),
+                            isFirstScan = isFirstScan,
+                            onSort = { sortingTab = headerTab },
+                            modifier = Modifier
+                                .collapsingHeaderTail(shortcutsHeader)
+                                .launchEntrance(LaunchOrder.TOOLS, rise = LaunchRise),
+                        )
+                    }
+
+                    CompositionLocalProvider(LocalLibraryShortcutsHeader provides shortcutsHeader) {
+                        // Every tab kept alive - the whole library is already in memory, so an off-screen tab costs
+                        // composition and nothing else, the same reason all five can be built on the launch frame.
+                        MusicTabPager(
+                            state = pagerState,
+                            modifier = Modifier.fillMaxSize(),
+                            key = { page -> visibleTabs[page].name },
+                        ) { page ->
+                            val tab = visibleTabs[page]
+                            val listState = listStates.getValue(tab)
+                            when (tab) {
+                                LibraryTab.TRACKS -> TracksScreen(viewModel, selection, listState)
+                                LibraryTab.ARTISTS -> ArtistsScreen(viewModel, selection, listState)
+                                LibraryTab.ALBUMS -> AlbumsScreen(viewModel, selection, listState)
+                                LibraryTab.GENRES -> GenresScreen(viewModel, selection, listState)
+                                LibraryTab.FOLDERS -> FoldersScreen(viewModel, selection, listState)
+                                LibraryTab.VIDEOS -> VideosScreen(viewModel, selection, listState)
+                            }
+                        }
+                    }
+                }
+
+                // Auxio's rules for its shuffle button: only over a library with tracks in it, and on the
+                // library itself rather than its search. Stepping aside for the player, a fast scroll or
+                // the list's end is the FAB stack's, as every FAB's is. Read by the stack as it draws the
+                // button - see QuickPlayButton - so this screen does not recompose for any of it.
+                QuickPlayButton(
+                    quickPlay = { quickPlay },
+                    visible = { hasTracks && searchQuery == null },
+                    favoritesPlaylistId = viewModel.favoritesPlaylistId,
+                    onPlay = viewModel::onQuickPlay,
+                    onPlayFrom = viewModel::onQuickPlayFrom,
+                    onChooseOther = onChooseQuickPlaySource,
+                )
+            }
+        }
+
+        sortingTab?.let { tab ->
+            SortSheet(sort = viewModel.sort(tab), onDismiss = { sortingTab = null })
+        }
+
+        // The selection only ends once the exclusion is confirmed: cancelling leaves every row picked.
+        excludingFolders?.let { folderPaths ->
+            ExcludeFoldersDialog(
+                folderPaths = folderPaths,
+                onDismiss = { excludingFolders = null },
+                onConfirmed = { selection.clear() },
+            )
+        }
+    }
+}
+
+/**
+ * Excluding folders, offered while the selection holds any, whichever tab is on screen - the one thing
+ * the library's own bar adds to every list's. It asks [onExclude] to confirm excluding the selected
+ * folders alone.
+ */
+@Composable
+private fun excludeFolderActions(selection: SelectionState, onExclude: (folderPaths: List<String>) -> Unit): List<TopBarAction> {
+    // A path selected in both of the Folders tab's sections is still one folder to exclude.
+    val folderPaths = selection.selectedKeys.filterIsInstance<SelectionKey.Folder>().map { it.folderPath }.distinct()
+    if (folderPaths.isEmpty()) return emptyList()
+    return listOf(
+        TopBarAction(label = OptionsAction.EXCLUDE.label, icon = OptionsAction.EXCLUDE.icon) { onExclude(folderPaths) },
+    )
+}
+
+/** The room above and below the tab strip. */
+/** The gaps down the library's head: bar to shortcuts, shortcuts to the tabs. */
+private val ShortcutsTopGap = 8.dp
+private val ShortcutsBottomGap = 12.dp
+
+/** The room above and below the tabs. */
+private val TabsVerticalPadding = 8.dp
+
+/** How a tab's count is said - "588 tracks". */
+private val LibraryTab.countPlural: Int
+    get() = when (this) {
+        LibraryTab.TRACKS -> R.plurals.library_tracks
+        LibraryTab.VIDEOS -> R.plurals.library_videos
+        LibraryTab.ARTISTS -> R.plurals.library_artists
+        LibraryTab.ALBUMS -> R.plurals.library_albums
+        LibraryTab.GENRES -> R.plurals.library_genres
+        LibraryTab.FOLDERS -> R.plurals.library_folders
+    }
+
+/** The library's title: Music's wordmark, heavier and a touch tighter than a screen's title. */
+private val WordmarkStyle = TextStyle(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold, letterSpacing = (-0.44).sp)
+
+/** The Music mark before the library's title. */
+private val LibraryMarkSize = 28.dp
+
+/** The tab on screen as a tab was moved along the strip, and the order it was moved in - see [LibraryPagerScreen]. */
+private class FollowedTab(val tab: LibraryTab, val order: List<LibraryTab>)
+
+/**
+ * The motion a tap gives the pager, as stiff as the pill's expressive spring - see `pillMotion` - so the two arrive
+ * together though they cover different distances, without the pill's bounce. A tap on the chosen tab moves its list back
+ * to the top with the same motion.
+ */
+private val TabMotion = spring<Float>(stiffness = ExpressiveFastSpatialStiffness)
+
+/** Material 3 Expressive's fast spatial spring's stiffness - `MotionScheme.expressive().fastSpatialSpec()`. */
+private const val ExpressiveFastSpatialStiffness = 800f
+
+/**
+ * Takes the list to its first row in one short glide, however far down it is.
+ *
+ * A list more than a screen down first jumps to a screen from the top: scrolling the whole way would
+ * compose every row in between, stuttering exactly where it should be fastest. What is left is always
+ * about a screen, so every return to the top takes the same brief, even time. Rows in a list share
+ * one shape, so a row's height gives that distance exactly and the glide lands on the first row.
+ */
+private suspend fun LazyListState.glideToTop() {
+    val rowsOnScreen = layoutInfo.visibleItemsInfo.size
+    if (firstVisibleItemIndex > rowsOnScreen) scrollToItem(rowsOnScreen)
+    val rowHeight = layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: return
+    animateScrollBy(-(firstVisibleItemIndex * rowHeight + firstVisibleItemScrollOffset).toFloat(), TabMotion)
+}
+
+/** A tab of the library asked for - a request of its own each time, so the tab asked for again is gone to again. */
+class LibraryTabRequest(val tab: LibraryTab)

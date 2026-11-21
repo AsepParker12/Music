@@ -1,0 +1,294 @@
+package com.music.app.feature.download
+
+import android.content.Context
+import android.text.format.DateFormat
+import android.text.format.DateUtils
+import android.text.format.Formatter
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.music.app.core.designsystem.component.CoverArtDefaults
+import com.music.app.core.designsystem.component.InfoSeparator
+import com.music.app.core.designsystem.component.MusicCoverArt
+import com.music.app.core.designsystem.component.MusicIconButton
+import com.music.app.core.designsystem.component.MusicVideoCover
+import com.music.app.core.designsystem.component.animateProgressAsState
+import com.music.app.core.designsystem.component.listRowBounds
+import com.music.app.core.designsystem.component.shape
+import com.music.app.core.designsystem.icon.MusicIcons
+import com.music.app.core.designsystem.theme.LocalCoverStyle
+import com.music.app.core.designsystem.theme.iconButtonPressShapes
+import com.music.app.core.downloader.fractionOf
+import com.music.app.core.model.Download
+import com.music.app.core.model.DownloadFailure
+import com.music.app.core.model.DownloadKind
+import com.music.app.core.model.DownloadStatus
+import com.music.app.core.model.DownloaderPreferences
+import com.music.app.feature.tageditor.SongSummary
+import com.music.app.feature.tageditor.SongTagging
+
+/** Whether a download is saved as the song it is - drawn as a song, square, rather than as an audio file. */
+private val Download.isSong: Boolean get() = choices.kind == DownloadKind.AUDIO && choices.savesAsSong
+
+/** The song [this] is saved as - picked, or found as it began - as its row shows it; null for any other. */
+internal val Download.song: SongSummary? get() = options.song?.takeIf { isSong }?.let(SongTagging::summaryOf)
+
+/**
+ * What stands for a download in its row: a song's cover, square - the song's own once it is found; an audio file's tile; a
+ * video's frame at 16:9 with its length.
+ */
+@Composable
+internal fun DownloadCover(download: Download, isSelected: Boolean) {
+    val song = remember(download.options.song) { download.song }
+    when {
+        download.choices.kind == DownloadKind.VIDEO -> MusicVideoCover(
+            coverArtUri = download.thumbnailUrl,
+            durationMs = (download.durationSeconds ?: 0) * 1000,
+            watchedFraction = { 0f },
+            isSelected = isSelected,
+        )
+
+        download.isSong -> MusicCoverArt(coverArtUri = song?.coverUri ?: download.thumbnailUrl, contentDescription = null, isSelected = isSelected)
+
+        else -> Box(
+            modifier = Modifier
+                .size(CoverArtDefaults.ListSize)
+                .clip(LocalCoverStyle.current.shape(CoverArtDefaults.ListCornerRadius))
+                .background(MaterialTheme.colorScheme.secondaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(if (download.choices.kind.isMedia) MusicIcons.GraphicEq else download.choices.kind.icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
+        }
+    }
+}
+
+/**
+ * What a row says of its download under its title: who made it, and what it is kept as - "Mara Vell · 1080p · MP4"; a song's
+ * artist and album.
+ */
+internal fun rowMeta(context: Context, download: Download): String = download.song?.let { listOf(it.artist, it.album).filter(String::isNotBlank).joinToString(InfoSeparator) }
+    ?.takeIf(String::isNotEmpty) ?: listOfNotNull(
+    download.uploader,
+    when {
+        download.choices.kind == DownloadKind.VIDEO -> context.getString(download.choices.videoQuality.labelRes)
+        download.isSong || !download.choices.kind.isMedia -> null
+        else -> context.getString(download.choices.audioFormat.labelRes)
+    },
+    download.savedPaths.firstOrNull()?.substringAfterLast('.', "")?.uppercase()?.takeIf(String::isNotEmpty),
+).joinToString(InfoSeparator).ifEmpty { hostOf(download.url) }
+
+/** How a row's status line reads: as it goes, quietly, or as a failure - each with the icon it starts with, where it has one. */
+internal enum class StatusTone { ACTIVE, QUIET, ERROR }
+
+internal class RowStatus(val text: String, val tone: StatusTone, val icon: ImageVector? = null)
+
+/**
+ * Where a row's download stands, in a few words: how far and how long left while it runs, what it waits for, how big once
+ * saved, or why it failed - never the machinery.
+ */
+internal fun rowStatus(
+    context: Context,
+    download: Download,
+    running: RunningDownload?,
+    held: HeldProgress?,
+    preferences: DownloaderPreferences,
+    isMissing: Boolean = false,
+): RowStatus {
+    fun size(bytes: Long) = Formatter.formatShortFileSize(context, bytes)
+    fun sizes(done: Long?, total: Long?) = done?.let { if (total != null) context.getString(R.string.download_size_done_of, size(it), size(total)) else size(it) }
+    return when {
+        running != null && running.isFinishingUp ->
+            RowStatus(context.getString(if (download.isSong) R.string.download_finishing_song else R.string.download_finishing), StatusTone.ACTIVE)
+
+        // Resumed, as far as it had got until it fetches again - what it said paused, and will say downloading.
+        running != null && !running.isFetching && held != null ->
+            RowStatus(listOfNotNull(context.getString(R.string.download_resuming), sizes(held.first, held.second)).joinToString(InfoSeparator), StatusTone.ACTIVE)
+
+        running != null -> RowStatus(
+            listOfNotNull(
+                if (running.item != null && running.itemCount != null) context.getString(R.string.download_item_of, running.item, running.itemCount) else null,
+                sizes(running.downloadedBytes, running.totalBytes),
+                timeLeft(context, running),
+            ).joinToString(InfoSeparator).ifEmpty { context.getString(R.string.download_starting) },
+            StatusTone.ACTIVE,
+        )
+
+        download.status == DownloadStatus.PAUSED ->
+            RowStatus(listOfNotNull(context.getString(R.string.download_paused), held?.let { sizes(it.first, it.second) }).joinToString(InfoSeparator), StatusTone.QUIET)
+
+        download.status == DownloadStatus.QUEUED || download.status == DownloadStatus.RUNNING -> {
+            val startAt = download.startAt
+            when {
+                download.failure == DownloadFailure.NO_NETWORK -> RowStatus(context.getString(R.string.download_waiting_network), StatusTone.QUIET, MusicIcons.WifiOff)
+                startAt != null && startAt > System.currentTimeMillis() -> {
+                    val time = DateFormat.getTimeFormat(context).format(startAt)
+                    RowStatus(context.getString(if (DateUtils.isToday(startAt)) R.string.download_starts_at else R.string.download_starts_tomorrow_at, time), StatusTone.QUIET)
+                }
+                // Resumed, and waiting its turn: as far as it had got, as it said paused and will say downloading.
+                held != null -> RowStatus(listOfNotNull(context.getString(R.string.download_resuming), sizes(held.first, held.second)).joinToString(InfoSeparator), StatusTone.ACTIVE)
+                preferences.wifiOnly -> RowStatus(context.getString(R.string.download_waiting_wifi), StatusTone.QUIET, MusicIcons.Wifi)
+                else -> RowStatus(context.getString(R.string.download_waiting), StatusTone.QUIET)
+            }
+        }
+
+        download.status == DownloadStatus.DONE && isMissing -> RowStatus(context.getString(R.string.download_status_missing), StatusTone.QUIET, MusicIcons.Warning)
+
+        download.status == DownloadStatus.DONE ->
+            RowStatus(listOfNotNull(context.getString(R.string.download_status_saved), download.sizeBytes.takeIf { it > 0 }?.let(::size)).joinToString(InfoSeparator), StatusTone.QUIET)
+
+        download.status == DownloadStatus.CANCELED -> RowStatus(context.getString(R.string.download_status_canceled), StatusTone.QUIET)
+        else -> RowStatus(context.getString((download.failure ?: DownloadFailure.FAILED).presentation.rowRes), StatusTone.ERROR, MusicIcons.Error)
+    }
+}
+
+/** How long [running] has left at the speed it goes - "1 min left" - null while it cannot tell. */
+private fun timeLeft(context: Context, running: RunningDownload): String? {
+    val speed = running.bytesPerSecond?.takeIf { it > 0 } ?: return null
+    val left = ((running.totalBytes ?: return null) - (running.downloadedBytes ?: return null)).coerceAtLeast(0) / speed
+    return if (left < 60) {
+        context.resources.getQuantityString(R.plurals.download_seconds_left, left.toInt(), left.toInt())
+    } else {
+        val minutes = (left / 60).toInt()
+        context.resources.getQuantityString(R.plurals.download_minutes_left, minutes, minutes)
+    }
+}
+
+/** A row's status line, under its title and what it is - coloured by how it reads. */
+@Composable
+internal fun RowStatusLine(status: RowStatus) {
+    val color = when (status.tone) {
+        StatusTone.ACTIVE -> MaterialTheme.colorScheme.primary
+        StatusTone.QUIET -> MaterialTheme.colorScheme.onSurfaceVariant
+        StatusTone.ERROR -> MaterialTheme.colorScheme.error
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        status.icon?.let { Icon(it, contentDescription = null, tint = color, modifier = Modifier.padding(end = 4.dp).size(16.dp)) }
+        Text(status.text, style = MaterialTheme.typography.bodyMedium, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/**
+ * How far a download is, filling its row from behind - YTDLnis's queue card: Material's linear progress indicator laid over the
+ * whole row, its indicator in the theme's primary colour at [FillAlpha], and no track - the rest of the row is as every other row. Each figure
+ * is moved to as every progress indicator moves - see [animateProgressAsState] - and while there is none - [fraction]
+ * null - it runs Material's indeterminate animation across the row.
+ */
+@Composable
+internal fun BoxScope.RowProgressFill(fraction: Float?) {
+    val modifier = Modifier.matchParentSize().listRowBounds().alpha(FillAlpha)
+    val color = MaterialTheme.colorScheme.primary
+    if (fraction == null) {
+        LinearProgressIndicator(modifier = modifier, color = color, trackColor = Color.Transparent, strokeCap = StrokeCap.Butt, gapSize = 0.dp)
+    } else {
+        val shown by animateProgressAsState(fraction)
+        LinearProgressIndicator(
+            progress = { shown },
+            modifier = modifier,
+            color = color,
+            trackColor = Color.Transparent,
+            strokeCap = StrokeCap.Butt,
+            gapSize = 0.dp,
+            drawStopIndicator = {},
+        )
+    }
+}
+
+/** How strongly the fill lies over its row: YTDLnis's `android:alpha="0.3"`. */
+private const val FillAlpha = 0.3f
+
+/**
+ * How far [download] is as its row fills - null where it does not fill: neither running, paused, nor resumed and waiting its turn,
+ * which fills as far as it had got. See [RowProgressFill].
+ */
+internal class RowFill(val fraction: Float?)
+
+internal fun rowFillOf(download: Download, running: RunningDownload?, held: HeldProgress?): RowFill? = when {
+    // None yet, or whole and made ready - merged, converted, tagged: Material's indeterminate run, as YTDLnis's `progress <= 0`.
+    running != null -> RowFill(progressOf(running, held)?.takeUnless { it <= 0f })
+    download.status == DownloadStatus.PAUSED || (held != null && download.status == DownloadStatus.QUEUED) -> RowFill(progressOf(null, held) ?: 0f)
+    else -> null
+}
+
+/**
+ * How far a download is, from 0 to 1, as everything shows it - its row, its sheet, its batch: as it runs, never less far than it
+ * had got before - what it reads as it starts again may say less, for a moment - and null while it is made ready, or nothing is
+ * known of it.
+ */
+internal fun progressOf(running: RunningDownload?, held: HeldProgress?): Float? {
+    if (running?.isFinishingUp == true) return null
+    return listOfNotNull(running?.fraction, fractionOf(held?.first, held?.second)).maxOrNull()
+}
+
+/**
+ * A row's one button, as its download stands: Pause while it runs or waits its turn, Resume while paused, Start now where it waits for a time,
+ * then Play once saved, its fix once failed, and Download again once cancelled. How far it is fills the row - see
+ * [RowProgressFill].
+ */
+@Composable
+internal fun DownloadRowButton(download: Download, running: RunningDownload?, isMissing: Boolean, viewModel: DownloadViewModel, onFix: () -> Unit) {
+    val ids = listOf(download.id)
+    when {
+        running != null && running.isFinishingUp ->
+            MusicIconButton(onClick = {}, icon = MusicIcons.AutoAwesome, contentDescription = stringResource(R.string.download_finishing), enabled = false)
+
+        download.status == DownloadStatus.PAUSED ->
+            MusicIconButton(onClick = { viewModel.onResume(ids) }, icon = MusicIcons.Play, contentDescription = stringResource(R.string.download_resume))
+
+        // Set to start later: started now. Running, or waiting its turn - as one just resumed does, a moment - paused: the one
+        // button it keeps from Resume to running, never another between.
+        running == null && (download.startAt ?: 0) > System.currentTimeMillis() ->
+            MusicIconButton(onClick = { viewModel.onResume(ids) }, icon = MusicIcons.Download, contentDescription = stringResource(R.string.download_start_now))
+
+        running != null || download.status == DownloadStatus.QUEUED || download.status == DownloadStatus.RUNNING ->
+            MusicIconButton(onClick = { viewModel.onPause(ids) }, icon = MusicIcons.Pause, contentDescription = stringResource(R.string.download_pause))
+
+        download.status == DownloadStatus.CANCELED || (download.status == DownloadStatus.DONE && isMissing) ->
+            FilledActionButton(MusicIcons.Download, stringResource(R.string.download_again), MaterialTheme.colorScheme.surfaceContainerHighest, MaterialTheme.colorScheme.onSurface) {
+                viewModel.onRetry(download)
+            }
+
+        download.status == DownloadStatus.DONE ->
+            FilledActionButton(download.choices.kind.openIcon, stringResource(download.choices.kind.openLabelRes), MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer) {
+                viewModel.onPlay(download)
+            }
+
+        else -> {
+            val fix = (download.failure ?: DownloadFailure.FAILED).presentation.fix
+            FilledActionButton(fix.icon, stringResource(fix.labelRes), MaterialTheme.colorScheme.errorContainer, MaterialTheme.colorScheme.onErrorContainer, onFix)
+        }
+    }
+}
+
+/** A filled round button - Play, a fix, Download again - in [containerColor]. */
+@Composable
+private fun FilledActionButton(icon: ImageVector, label: String, containerColor: Color, contentColor: Color, onClick: () -> Unit) {
+    FilledTonalIconButton(
+        onClick = onClick,
+        shapes = iconButtonPressShapes(),
+        colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = containerColor, contentColor = contentColor),
+    ) {
+        Icon(icon, contentDescription = label)
+    }
+}

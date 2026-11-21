@@ -1,0 +1,311 @@
+package com.music.app.feature.library
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.designsystem.component.EmptyStateAction
+import com.music.app.core.data.LibraryContent
+import com.music.app.core.data.itemsOrEmpty
+import com.music.app.core.data.search.matchesSearch
+import com.music.app.core.designsystem.component.coverSeed
+import com.music.app.core.designsystem.component.fastscroll.FastScroller
+import com.music.app.core.designsystem.component.screen.PlayingRow
+import com.music.app.core.designsystem.component.LocalBottomContentPadding
+import com.music.app.core.designsystem.component.LocalDragSelection
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.TopBarSearch
+import com.music.app.core.designsystem.component.dragSelection
+import com.music.app.core.designsystem.component.sheet.sortAction
+import com.music.app.core.designsystem.component.swipe.LocalSwipeActions
+import com.music.app.core.designsystem.component.rememberDragSelection
+import com.music.app.core.designsystem.component.rememberSelectionState
+import com.music.app.core.designsystem.component.title
+import com.music.app.core.designsystem.icon.MusicIcons
+import com.music.app.core.model.BuiltInList
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.Playlist
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.library.R
+import com.music.app.feature.library.operation.DeletePlaylistsDialog
+import com.music.app.feature.library.options.OptionsAction
+import com.music.app.feature.library.options.OptionsFollowUps
+import com.music.app.feature.library.options.OptionsSheet
+import com.music.app.feature.library.options.OptionsSwipe
+import com.music.app.feature.library.options.OptionsTarget
+import com.music.app.feature.library.options.label
+import com.music.app.feature.library.options.rememberOptionsActions
+import com.music.app.feature.library.options.rememberOptionsSwipeActions
+import com.music.app.feature.library.playlist.NewPlaylistFlow
+import com.music.app.feature.library.selection.SelectionKey
+import com.music.app.feature.library.selection.SelectionOptionsHost
+import com.music.app.feature.library.selection.selectionKeyOf
+import com.music.app.feature.library.selection.toLibraryTopBarSelection
+import com.music.app.feature.library.sort.SortSheet
+
+/** Most played's title, which is also what a search matches it on. */
+
+/** A row of the list: Most played pinned first, then the playlists. */
+private sealed interface PlaylistsRow {
+    data object MostPlayed : PlaylistsRow
+
+    data class OfPlaylist(val playlist: Playlist) : PlaylistsRow
+}
+
+/** Whether [row] is the one playing - the one rule its row and the scroll button to it both go by. */
+private fun LibraryPlayback.marks(row: PlaylistsRow): Boolean = when (row) {
+    PlaylistsRow.MostPlayed -> marks(PlaybackParent.MostPlayed)
+    is PlaylistsRow.OfPlaylist -> marks(row.playlist)
+}
+
+/**
+ * The playlists the user made, with Most played pinned above them.
+ *
+ * Favorites and Recent are not listed: each is a shortcut card of its own on the library screen, one
+ * tap away already. Most played is only pinned once something has actually been counted in it, so an
+ * install with nothing played yet and no playlists shows the empty state, which offers to create one.
+ *
+ * Creating a playlist is one button, whichever way it starts - empty, from a folder or from a playlist
+ * file - see [NewPlaylistFlow]. Importing a file into a playlist that already exists is that playlist's
+ * own option.
+ *
+ * Reached from the Playlists shortcut rather than a tab - the tabs browse the library by one of its
+ * own dimensions, and a playlist is not one of those, it is something the user made.
+ */
+data object PlaylistsScreen : Screen {
+
+    @Composable
+    override fun Content() {
+        val navigator = LocalNavigator.current
+        val viewModel: PlaylistsViewModel = hiltViewModel()
+        val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+        val mostPlayedCount by viewModel.mostPlayedCount.collectAsStateWithLifecycle()
+        val mostPlayedCoverArtUris by viewModel.mostPlayedCoverArtUris.collectAsStateWithLifecycle()
+        val playback by viewModel.playback.collectAsStateWithLifecycle()
+        val playlistSections by viewModel.playlistSections.collectAsStateWithLifecycle()
+        val selection = rememberSelectionState()
+        val listState = rememberLazyListState()
+        // What a row's swipe carries out - the options sheet's own actions.
+        val rowActions = rememberOptionsActions()
+
+        var searchQuery by remember { mutableStateOf<String?>(null) }
+        var isCreatingPlaylist by remember { mutableStateOf(false) }
+        var renamingPlaylist by remember { mutableStateOf<Playlist?>(null) }
+        var confirmingDelete by remember { mutableStateOf<List<Playlist>>(emptyList()) }
+        var isSortSheetOpen by remember { mutableStateOf(false) }
+        var optionsTarget by remember { mutableStateOf<OptionsTarget.ForPlaylist?>(null) }
+
+        // Most played is a row here rather than a playlist, so it is matched on its own title -
+        // otherwise typing "most" would hide the very row it names.
+        val visiblePlaylists = playlists.filterItems { !it.isBuiltIn }.searchedFor(searchQuery) { listOf(it.name) }
+        val showsMostPlayed = mostPlayedCount.trackCount > 0 && matchesSearch(searchQuery, BuiltInList.MOST_PLAYED.title)
+        val rows: LibraryContent<PlaylistsRow> = when (visiblePlaylists) {
+            is LibraryContent.Loading -> LibraryContent.Loading
+            is LibraryContent.Ready -> LibraryContent.Ready(
+                listOfNotNull(PlaylistsRow.MostPlayed.takeIf { showsMostPlayed }) +
+                    visiblePlaylists.items.map(PlaylistsRow::OfPlaylist),
+            )
+        }
+        val selectedPlaylists = visiblePlaylists.itemsOrEmpty.filter { SelectionKey.Playlist(it.id) in selection.selectedKeys }
+
+        SelectionOptionsHost(selection) { openSelectionOptions, _ ->
+            Column(modifier = Modifier.fillMaxSize()) {
+                MusicTopAppBar(
+                    title = stringResource(R.string.playlists_title),
+                    onNavigateBack = navigator::back,
+                    actions = listOf(
+                        TopBarAction(label = stringResource(R.string.library_search), icon = MusicIcons.Search) { searchQuery = "" },
+                        sortAction { isSortSheetOpen = true },
+                        TopBarAction(label = stringResource(R.string.library_new_playlist), icon = MusicIcons.Add) { isCreatingPlaylist = true },
+                    ),
+                    search = searchQuery?.let { current ->
+                        TopBarSearch(
+                            query = current,
+                            onQueryChange = { searchQuery = it },
+                            onClose = { searchQuery = null },
+                        )
+                    },
+                    // Rename needs exactly one playlist to rename.
+                    selection = selection.toLibraryTopBarSelection(
+                        listKeys = {
+                            visiblePlaylists.itemsOrEmpty.filter { it.trackCount > 0 }.map { SelectionKey.Playlist(it.id) }
+                        },
+                        onMoreOptions = openSelectionOptions,
+                        actions = buildList {
+                            selectedPlaylists.singleOrNull()?.let { playlist ->
+                                add(
+                                    TopBarAction(label = stringResource(R.string.playlists_rename), icon = MusicIcons.DriveFileRenameOutline) {
+                                        renamingPlaylist = playlist
+                                    },
+                                )
+                            }
+                            if (selectedPlaylists.isNotEmpty()) {
+                                add(
+                                    // The playlist's own Delete, as its options sheet draws it.
+                                    TopBarAction(label = OptionsAction.DELETE.label, icon = OptionsAction.DELETE.icon) {
+                                        confirmingDelete = selectedPlaylists
+                                    },
+                                )
+                            }
+                        },
+                    ),
+                )
+
+                LibraryListContent(
+                    content = rows,
+                    // A playlist exists whether or not the library has been scanned, so neither the
+                    // permission nor the scanning explanation can apply to this list being empty.
+                    hasPermission = true,
+                    isScanning = false,
+                    emptyTitle = stringResource(if (searchQuery == null) R.string.playlists_empty_title else R.string.playlists_none_found),
+                    emptyMessage = if (searchQuery == null) {
+                        stringResource(R.string.playlists_empty_message)
+                    } else {
+                        searchEmptyMessage(searchQuery)
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    // Only while not searching: a search that matches nothing is not a missing playlist.
+                    emptyAction = if (searchQuery == null) {
+                        EmptyStateAction(label = stringResource(R.string.playlists_create), icon = MusicIcons.Add) { isCreatingPlaylist = true }
+                    } else {
+                        null
+                    },
+                ) { items ->
+                    val selectableKeys = remember(items) {
+                        items.mapNotNull { (it as? PlaylistsRow.OfPlaylist)?.playlist?.let(::selectionKeyOf) }
+                    }
+                    val dragSelection = rememberDragSelection(selection, listState, selectableKeys)
+                    // Every row is one item of the list, so a row's place among them is its place in the list.
+                    val playingRow = remember(items) {
+                        derivedStateOf {
+                            items.indexOfFirst { row -> playback.marks(row) }
+                                .takeIf { it >= 0 }
+                                ?.let { index -> PlayingRow(index, playback.isPlaying) }
+                        }
+                    }
+                    FastScroller(
+                        listState = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        // Most played, on top, has no section of its own: it stands in the one of the playlist under it.
+                        sectionAt = { index ->
+                            items.asSequence().drop(index)
+                                .firstNotNullOfOrNull { (it as? PlaylistsRow.OfPlaylist)?.playlist?.id }
+                                ?.let(playlistSections)
+                        },
+                        playingRow = { playingRow.value },
+                    ) { overscrollEffect ->
+                        CompositionLocalProvider(LocalDragSelection provides dragSelection) {
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .dragSelection(dragSelection),
+                                contentPadding = PaddingValues(bottom = LocalBottomContentPadding.current),
+                                overscrollEffect = overscrollEffect,
+                            ) {
+                                items(
+                                    items = items,
+                                    key = { row ->
+                                        when (row) {
+                                            PlaylistsRow.MostPlayed -> "most-played"
+                                            is PlaylistsRow.OfPlaylist -> "playlist-${row.playlist.id}"
+                                        }
+                                    },
+                                ) { row ->
+                                    // Every row swipes to play or shuffle it whole - see [OptionsSwipe.PLAYBACK] -
+                                    // and holds still while a selection runs: Most played too, though it is
+                                    // never selected itself.
+                                    val swipeActions = when (row) {
+                                        PlaylistsRow.MostPlayed ->
+                                            rememberOptionsSwipeActions(OptionsSwipe.PLAYBACK, rowActions, PlaybackParent.MostPlayed)
+                                        is PlaylistsRow.OfPlaylist ->
+                                            rememberOptionsSwipeActions(OptionsSwipe.PLAYBACK, rowActions, OptionsTarget.ForPlaylist(row.playlist))
+                                    }
+                                    CompositionLocalProvider(
+                                        LocalSwipeActions provides swipeActions.takeUnless { selection.isActive },
+                                    ) {
+                                        when (row) {
+                                            PlaylistsRow.MostPlayed -> TrackCollectionRow(
+                                                title = BuiltInList.MOST_PLAYED.title,
+                                                seed = BuiltInList.MOST_PLAYED.coverSeed,
+                                                trackCount = mostPlayedCount.trackCount,
+                                                videoCount = mostPlayedCount.videoCount,
+                                                coverArtUris = mostPlayedCoverArtUris,
+                                                isCurrent = { playback.marks(row) },
+                                                isPlaying = { playback.isPlaying },
+                                                onClick = { navigator.go(MostPlayedScreen) },
+                                            )
+
+                                            is PlaylistsRow.OfPlaylist -> PlaylistRow(
+                                                playlist = row.playlist,
+                                                selection = selection,
+                                                isCurrent = { playback.marks(row) },
+                                                isPlaying = { playback.isPlaying },
+                                                onClick = { navigator.go(PlaylistDetailScreen(row.playlist.id)) },
+                                                onOpenOptions = { optionsTarget = OptionsTarget.ForPlaylist(row.playlist) },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (isCreatingPlaylist) {
+            NewPlaylistFlow(onFinished = { isCreatingPlaylist = false })
+        }
+
+        renamingPlaylist?.let { playlist ->
+            PlaylistNameDialog(
+                dialogTitle = stringResource(R.string.playlists_rename_title),
+                confirmLabel = stringResource(R.string.playlists_rename),
+                initialName = playlist.name,
+                // Its own name is not "taken" by anything else, so renaming without changing it
+                // is allowed rather than reported as a clash.
+                takenNames = playlists.itemsOrEmpty.map { it.name } - playlist.name,
+                onDismiss = { renamingPlaylist = null },
+                onConfirm = { name ->
+                    viewModel.renamePlaylist(playlist.id, name)
+                    renamingPlaylist = null
+                    selection.clear()
+                },
+            )
+        }
+
+        if (isSortSheetOpen) {
+            SortSheet(sort = viewModel.sort, onDismiss = { isSortSheetOpen = false })
+        }
+
+        optionsTarget?.let { target ->
+            OptionsSheet(target = target, onDismissRequest = { optionsTarget = null })
+        }
+
+        OptionsFollowUps(actions = rowActions)
+
+        if (confirmingDelete.isNotEmpty()) {
+            DeletePlaylistsDialog(
+                playlists = confirmingDelete,
+                onDismiss = { confirmingDelete = emptyList() },
+                onConfirmed = { selection.clear() },
+            )
+        }
+    }
+}

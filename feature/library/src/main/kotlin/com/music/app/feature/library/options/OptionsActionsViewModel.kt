@@ -1,0 +1,379 @@
+package com.music.app.feature.library.options
+
+import com.music.app.feature.tageditor.FileExistsException
+import com.music.app.feature.tageditor.TrackFileChanges
+import com.music.app.core.designsystem.component.toast
+import com.music.app.feature.library.R
+import android.content.Context
+import android.os.Build
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.music.app.core.data.LibraryContent
+import com.music.app.core.data.LibraryRepository
+import com.music.app.core.data.contentUri
+import com.music.app.core.data.itemsOrEmpty
+import com.music.app.core.data.playlist.PlaylistFile
+import com.music.app.core.datastore.LibrarySettings
+import com.music.app.core.datastore.PlaybackSettings
+import com.music.app.core.datastore.stateIn
+import com.music.app.core.model.Artist
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.Playlist
+import com.music.app.core.model.Track
+import com.music.app.core.vault.VaultRepository
+import com.music.app.core.vault.VaultState
+import com.music.app.core.vault.data.VaultItem
+import com.music.app.feature.library.favorite.FavoriteItems
+import com.music.app.feature.library.favorite.Favorites
+import com.music.app.feature.library.readPlaylistFile
+import com.music.app.feature.library.writeM3u
+import com.music.app.core.common.coroutines.launchOperation
+import com.music.app.feature.library.selection.SelectionKey
+import com.music.app.feature.library.selection.tracksOf
+import com.music.app.feature.playback.PlaybackController
+import com.music.app.feature.scanner.MediaScanner
+import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
+import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * What an options sheet's rows do - playing, queueing, adding to a playlist, sharing, and the changes
+ * that cannot be taken back: excluding folders, removing tracks from a playlist, deleting playlists and
+ * deleting tracks' files from the device. Shared by every entity's sheet
+ * and every selection bar, so a track, an album, an artist, a genre, a folder and a playlist all reach
+ * the queue, the playlist table and the library the same way.
+ *
+ * Scoped to the screen rather than the sheet, so work started from a row - resolving a collection's
+ * tracks to share them - finishes even though the sheet has already slid away.
+ */
+@HiltViewModel
+class OptionsActionsViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val repository: LibraryRepository,
+    private val playbackController: PlaybackController,
+    private val librarySettings: LibrarySettings,
+    private val mediaScanner: MediaScanner,
+    private val vaultRepository: VaultRepository,
+    private val playbackSettings: PlaybackSettings,
+    private val fileChanges: TrackFileChanges,
+) : ViewModel() {
+
+    internal fun renamePlaylist(playlistId: Long, name: String) {
+        viewModelScope.launch { repository.renamePlaylist(playlistId, name) }
+    }
+
+    /** Renames [track]'s file [fileName], whole - saying why not, where a file of that name is there already or it cannot be. */
+    internal fun renameFile(track: Track, fileName: String) {
+        viewModelScope.launch {
+            try {
+                fileChanges.renameWhole(track, fileName)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: FileExistsException) {
+                context.toast(R.string.options_rename_file_exists)
+            } catch (_: Exception) {
+                context.toast(R.string.options_rename_file_failed)
+            }
+        }
+    }
+
+    /** Every playlist there is to add to. */
+    val playlists: StateFlow<LibraryContent<Playlist>> = repository.playlists
+
+    /** Every artist by id, which names those a track or album is credited to. */
+    val artistsById: StateFlow<Map<Long, Artist>> = repository.artistsById
+
+    /** What Favorites holds, for the heart of whatever is shown - see [Favorites]. */
+    internal val favorites: StateFlow<Favorites> =
+        combine(repository.favoriteTrackIds, repository.favoriteCollections) { trackIds, collections ->
+            Favorites(trackIds, collections.toSet())
+        }.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            Favorites(repository.favoriteTrackIds.value, repository.favoriteCollections.value.toSet()),
+        )
+
+    /** Puts [items] in Favorites - or, while not [isFavorite], takes them out - each its own way: see [FavoriteItems]. */
+    internal fun setFavorite(items: FavoriteItems, isFavorite: Boolean) {
+        viewModelScope.launch { repository.setFavorites(items.trackIds, items.collections, isFavorite) }
+    }
+
+    /** The collections whose plays are kept out of Most played - what a collection's options offer to change. */
+    val uncountedParents: StateFlow<Set<PlaybackParent>> = playbackSettings.uncountedParents.stateIn(viewModelScope)
+
+    /** Has plays from [target] count towards Most played where [counted], or keeps them out of it otherwise. */
+    fun setPlaysCounted(target: OptionsTarget, counted: Boolean) {
+        val parent = target.playbackParent ?: return
+        viewModelScope.launch { playbackSettings.setPlaysCounted(listOf(parent), counted) }
+    }
+
+    /**
+     * Whether options offer "Add to Private Folder": once it is set up, and while its settings leave the offer on - see
+     * [OptionsTarget.actions].
+     */
+    val offersAddToPrivate: StateFlow<Boolean> = vaultRepository.state
+        .map { it.offersAddToPrivate }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), vaultRepository.state.value.offersAddToPrivate)
+
+    /**
+     * Copies [tracks]' files into the Private Folder, handing [onCopied] what they became there - all of them or none:
+     * null when any could not be read, the copies already made taken back out. The library's files are still there:
+     * deleting them is the dialog's to do, and [discardPrivateCopies] undoes this should that fail, so a move never
+     * leaves a file in both places.
+     */
+    fun copyToPrivate(tracks: List<Track>, onCopied: (List<VaultItem>?) -> Unit) {
+        viewModelScope.launch {
+            val items = ArrayList<VaultItem>(tracks.size)
+            for (track in tracks) {
+                val item = try {
+                    withContext(Dispatchers.IO) {
+                        checkNotNull(context.contentResolver.openInputStream(track.contentUri)) { "Cannot read ${track.path}" }
+                            .use { source -> vaultRepository.add(track, source) }
+                    }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    null
+                }
+                if (item == null) {
+                    items.forEach { vaultRepository.delete(it) }
+                    onCopied(null)
+                    return@launch
+                }
+                items += item
+            }
+            onCopied(items)
+        }
+    }
+
+    fun discardPrivateCopies(items: List<VaultItem>) {
+        viewModelScope.launch { items.forEach { vaultRepository.delete(it) } }
+    }
+
+    /**
+     * Plays [target] now with shuffle off - Auxio's `playExplicit`. A track plays the list it was opened
+     * from, starting at itself; anything else plays its own tracks from the first, as their parent.
+     */
+    fun play(target: OptionsTarget) {
+        startPlayback(target, shuffled = false)
+    }
+
+    /**
+     * Shuffles [target] - Auxio's `shuffleExplicit`. The queue is the one Play builds, in the same order,
+     * with shuffle on: a track plays first, a collection starts from a random one of its own tracks.
+     */
+    fun shuffle(target: OptionsTarget) {
+        startPlayback(target, shuffled = true)
+    }
+
+    /** Plays [target]'s own tracks right after the current one. */
+    fun playNext(target: OptionsTarget) {
+        viewModelScope.launch {
+            val tracks = entityTracks(target)
+            if (tracks.isNotEmpty()) playbackController.playNext(tracks)
+        }
+    }
+
+    /** Plays [target]'s own tracks after everything else queued. */
+    fun addToQueue(target: OptionsTarget) {
+        viewModelScope.launch {
+            val tracks = entityTracks(target)
+            if (tracks.isNotEmpty()) playbackController.addToQueue(tracks)
+        }
+    }
+
+    /** Adds [target]'s own tracks to an existing playlist. */
+    fun addToPlaylist(target: OptionsTarget, playlistId: Long) {
+        viewModelScope.launch {
+            val trackIds = entityTracks(target).map { it.id }
+            if (trackIds.isNotEmpty()) repository.addTracksToPlaylist(playlistId, trackIds)
+        }
+    }
+
+    /** Creates a playlist named [name], then adds [target]'s own tracks to it. */
+    fun createPlaylistAndAddTo(target: OptionsTarget, name: String) {
+        viewModelScope.launch {
+            val trackIds = entityTracks(target).map { it.id }
+            val playlistId = repository.createPlaylist(name) ?: return@launch
+            if (trackIds.isNotEmpty()) repository.addTracksToPlaylist(playlistId, trackIds)
+        }
+    }
+
+    /**
+     * Keeps [folderPaths] out of the library, then waits for the rescan that takes their tracks out, so
+     * [onFinished] is told only once the folders are really gone from every list.
+     */
+    fun excludeFolders(folderPaths: List<String>, onFinished: (succeeded: Boolean) -> Unit) {
+        viewModelScope.launchOperation(onFinished) {
+            librarySettings.addExcludedFolders(repository.foldersListedAs(folderPaths))
+            mediaScanner.rescan()
+        }
+    }
+
+    /** Takes [trackIds] out of [list] - see [RemovableTrackList]. The files themselves are untouched. */
+    fun removeFrom(list: RemovableTrackList, trackIds: List<Long>, onFinished: (succeeded: Boolean) -> Unit) {
+        viewModelScope.launchOperation(onFinished) {
+            when (list) {
+                is RemovableTrackList.Playlist -> repository.removeTracksFromPlaylist(list.playlist.id, trackIds)
+                RemovableTrackList.RecentlyPlayed -> repository.removeFromRecentlyPlayed(trackIds)
+                RemovableTrackList.MostPlayed -> repository.removeFromMostPlayed(trackIds)
+            }
+        }
+    }
+
+    /**
+     * Deletes [tracks]' files itself - with the storage permission below Android 11, or with access to
+     * manage all files from 11 on, as a file manager deletes - then lets go of them as
+     * [forgetDeletedTracks] does. It fails if any file is still there afterwards; one already gone counts
+     * as deleted.
+     *
+     * From Android 11 on a file and its MediaStore row are one: deleting the file removes the row. Below
+     * it they are apart, so the row is deleted as well, or the next refresh would bring the track back.
+     */
+    fun deleteTracks(tracks: List<Track>, onFinished: (succeeded: Boolean) -> Unit) {
+        viewModelScope.launchOperation(onFinished) {
+            withContext(Dispatchers.IO) {
+                tracks.forEach { track ->
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && !track.isManuallyScanned) {
+                        context.contentResolver.delete(track.contentUri, null, null)
+                    }
+                    val file = File(track.path)
+                    file.delete()
+                    check(!file.exists()) { "${track.path} could not be deleted" }
+                }
+            }
+            settleDeletedTracks(tracks)
+        }
+    }
+
+    /**
+     * Lets go of [tracks] once their files are deleted - by Android's own request, or by [deleteTracks]:
+     * out of the queue and out of the library at once, so [onFinished] is told as they leave every list,
+     * playlists included.
+     */
+    fun forgetDeletedTracks(tracks: List<Track>, onFinished: (succeeded: Boolean) -> Unit) {
+        viewModelScope.launchOperation(onFinished) { settleDeletedTracks(tracks) }
+    }
+
+    private suspend fun settleDeletedTracks(tracks: List<Track>) {
+        val trackIds = tracks.mapTo(HashSet()) { it.id }
+        playbackController.removeFromQueue(trackIds)
+        mediaScanner.forgetTracks(trackIds)
+    }
+
+    /** Deletes the playlists [playlistIds] name. The tracks they hold are untouched. */
+    fun deletePlaylists(playlistIds: List<Long>, onFinished: (succeeded: Boolean) -> Unit) {
+        viewModelScope.launchOperation(onFinished) { playlistIds.forEach { repository.deletePlaylist(it) } }
+    }
+
+    /**
+     * Adds an M3U file's tracks to [playlistId]. [onResult] reports whether anything was imported - a
+     * file that cannot be opened and one naming no music this device has both leave the playlist as it was.
+     */
+    fun importIntoPlaylist(playlistId: Long, openStream: () -> InputStream?, onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val trackIds = readPlaylistFile(openStream, repository.allTracks).entries.map { it.track.id }
+            if (trackIds.isNotEmpty()) repository.addTracksToPlaylist(playlistId, trackIds)
+            onResult(trackIds.isNotEmpty())
+        }
+    }
+
+    /**
+     * Writes [target]'s own tracks as an M3U file, in the order they are shown - nothing, for one holding
+     * no tracks. A playlist's file also keeps its sort and each track's date added, so importing it
+     * brings the playlist back as it is: see [LibraryRepository.playlistFile].
+     */
+    fun exportTracks(target: OptionsTarget, openStream: () -> OutputStream?) {
+        viewModelScope.launch {
+            val file = if (target is OptionsTarget.ForPlaylist) {
+                repository.playlistFile(target.playlist.id)
+            } else {
+                PlaylistFile.of(entityTracks(target))
+            }
+            if (file.entries.isEmpty()) return@launch
+            withContext(Dispatchers.IO) { openStream()?.use { stream -> writeM3u(stream, file) } }
+        }
+    }
+
+    /** Hands [target]'s own tracks to [onLoaded] once they are known - what sharing a selection needs. */
+    fun loadTracks(target: OptionsTarget, onLoaded: (List<Track>) -> Unit) {
+        viewModelScope.launch { onLoaded(entityTracks(target)) }
+    }
+
+    /**
+     * Turns a selection into the tracks it stands for - see [tracksOf] - and hands them to [onResolved]
+     * as the selection's sheet target. Nothing is handed over for a selection that stands for no tracks.
+     */
+    fun resolveSelection(keys: List<SelectionKey>, onResolved: (OptionsTarget.ForSelection) -> Unit) {
+        viewModelScope.launch {
+            val tracks = repository.tracksOf(keys)
+            if (tracks.isNotEmpty()) onResolved(OptionsTarget.ForSelection(tracks, keys))
+        }
+    }
+
+    /** The playlists already holding every one of [target]'s own tracks - Auxio's `PlaylistChoice.alreadyAdded`. */
+    suspend fun playlistIdsHoldingAll(target: OptionsTarget): Set<Long> {
+        val trackIds = entityTracks(target).map { it.id }
+        return playlists.value.itemsOrEmpty
+            .filter { playlist -> readyTracks(repository.playlistTracks(playlist.id)).map { it.id }.containsAll(trackIds) }
+            .mapTo(HashSet()) { it.id }
+    }
+
+    /**
+     * Plays the collection [parent] names, whole - [shuffled], from a random one of its tracks - as its
+     * own screen's Play and Shuffle do. For a row with no [OptionsTarget] of its own: Most played.
+     */
+    fun playCollection(parent: PlaybackParent, shuffled: Boolean) {
+        viewModelScope.launch { playWhole(readyTracks(repository.collectionTracks(parent)), parent, shuffled) }
+    }
+
+    private fun startPlayback(target: OptionsTarget, shuffled: Boolean) {
+        viewModelScope.launch {
+            if (target !is OptionsTarget.ForTrack) {
+                playWhole(entityTracks(target), target.playbackParent, shuffled)
+                return@launch
+            }
+            val tracks = target.queueSource
+            if (tracks.isEmpty()) return@launch
+            val startIndex = tracks.indexOfFirst { it.id == target.track.id }.coerceAtLeast(0)
+            playbackController.playTracks(tracks, startIndex, target.queueParent, shuffled)
+        }
+    }
+
+    /** Plays [tracks] from the first, or [shuffled] from a random one - a collection started as a whole. */
+    private fun playWhole(tracks: List<Track>, parent: PlaybackParent?, shuffled: Boolean) {
+        if (tracks.isEmpty()) return
+        playbackController.playTracks(tracks, if (shuffled) tracks.indices.random() else 0, parent, shuffled)
+    }
+
+    /** [target] on its own - a track by itself, or a collection's tracks. Never the track's surrounding list. */
+    private suspend fun entityTracks(target: OptionsTarget): List<Track> = when (target) {
+        is OptionsTarget.ForTrack -> listOf(target.track)
+        is OptionsTarget.ForAlbum -> readyTracks(repository.albumTracks(target.album.id))
+        is OptionsTarget.ForArtist -> readyTracks(repository.artistTracks(target.artist.id))
+        is OptionsTarget.ForGenre -> readyTracks(repository.genreTracks(target.genre.id))
+        is OptionsTarget.ForPlaylist -> readyTracks(repository.playlistTracks(target.playlist.id))
+        is OptionsTarget.ForFolder -> readyTracks(repository.folderTracks(target.folder.path, target.folder.isVideo))
+        is OptionsTarget.ForSelection -> target.tracks
+    }
+
+    /** Waits for the query to actually have rows rather than [LibraryContent.Loading]'s empty first emission. */
+    private suspend fun readyTracks(query: Flow<LibraryContent<Track>>): List<Track> =
+        query.first { it is LibraryContent.Ready }.itemsOrEmpty
+}
+
+private val VaultState.offersAddToPrivate: Boolean get() = (this as? VaultState.Created)?.offersAddToPrivate == true

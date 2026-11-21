@@ -1,0 +1,1096 @@
+package com.music.app.feature.library
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import com.music.app.core.designsystem.component.CoverArtDefaults
+import com.music.app.core.designsystem.theme.MusicComponentStyle
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.OverscrollEffect
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.common.format.formatDuration
+import com.music.app.core.common.permission.AppPermission
+import com.music.app.core.data.LibraryContent
+import com.music.app.core.data.itemsOrEmpty
+import com.music.app.core.data.search.SearchIndex
+import com.music.app.core.designsystem.component.InfoSeparator
+import com.music.app.core.designsystem.component.EmptyStateAction
+import com.music.app.core.designsystem.component.MusicEmptyState
+import com.music.app.core.designsystem.component.fastscroll.FastScroller
+import com.music.app.core.designsystem.component.header.CollapsingHeaderState
+import com.music.app.core.designsystem.component.screen.PlayingRow
+import com.music.app.core.designsystem.component.screen.scrollBackToTop
+import com.music.app.core.designsystem.component.screen.scrollToRow
+import com.music.app.core.designsystem.component.overscroll.MusicPullToRefreshBox
+import com.music.app.core.designsystem.component.permission.rememberPermissionRequest
+import com.music.app.core.designsystem.component.section.rememberSectionListState
+import com.music.app.core.designsystem.component.section.sectionItemAnimation
+import com.music.app.core.designsystem.component.section.section
+import com.music.app.core.designsystem.component.section.withoutItemAnimation
+import com.music.app.core.designsystem.component.ListRowGap
+import com.music.app.core.designsystem.component.LocalLaunchEntrance
+import com.music.app.core.designsystem.component.LocalRowReveal
+import com.music.app.core.designsystem.component.revealedRow
+import com.music.app.core.designsystem.component.rowReveal
+import com.music.app.core.designsystem.component.LocalBottomContentPadding
+import com.music.app.core.designsystem.component.LocalDragHandle
+import com.music.app.core.designsystem.component.LocalDragSelection
+import com.music.app.core.designsystem.component.SelectionState
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.TopBarSearch
+import com.music.app.core.designsystem.component.dragSelection
+import com.music.app.core.designsystem.component.rememberDragSelection
+import com.music.app.core.designsystem.component.rememberSelectionState
+import com.music.app.core.designsystem.component.sheet.optionsSheetAction
+import com.music.app.core.designsystem.component.sheet.sortAction
+import com.music.app.core.designsystem.component.swipe.LocalSwipeActions
+import com.music.app.core.designsystem.component.toast
+import com.music.app.core.designsystem.icon.MusicIcons
+import com.music.app.core.designsystem.motion.rememberRubberBandOverscroll
+import com.music.app.core.model.Track
+import com.music.app.core.model.sort.SortCriterion
+import com.music.app.core.designsystem.component.DetailHeader
+import com.music.app.core.designsystem.component.DetailScaffold
+import com.music.app.core.designsystem.component.FavoriteToggle
+import com.music.app.core.designsystem.component.TopBarCollapse
+import com.music.app.core.designsystem.component.rememberDetailHeaderState
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.feature.library.R
+import com.music.app.feature.library.operation.RemoveFromListDialog
+import com.music.app.feature.library.favorite.favoriteItemsOf
+import com.music.app.feature.library.options.OptionsAction
+import com.music.app.feature.library.options.OptionsFollowUps
+import com.music.app.feature.library.options.OptionsSheet
+import com.music.app.feature.library.options.OptionsSwipe
+import com.music.app.feature.library.options.OptionsTarget
+import com.music.app.feature.library.options.RemovableTrackList
+import com.music.app.feature.library.options.TrackOptionsContext
+import com.music.app.feature.library.options.label
+import com.music.app.feature.library.options.rememberOptionsActions
+import com.music.app.feature.library.options.rememberOptionsSwipeActions
+import com.music.app.feature.library.selection.MovingTracks
+import com.music.app.feature.library.selection.SelectionKey
+import com.music.app.feature.library.selection.SelectionOptionsHost
+import com.music.app.feature.library.selection.selectionKeyOf
+import com.music.app.feature.library.selection.toLibraryTopBarSelection
+import com.music.app.feature.library.sort.SortSheet
+import com.music.app.feature.scanner.R as ScannerR
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.ReorderableLazyListState
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
+import sh.calvin.reorderable.rememberReorderableLazyListState
+
+/**
+ * Shared building blocks for the library's list/detail screens, kept small and private-ish to
+ * this module so every screen feels like a sibling.
+ */
+
+/** The size of a loading list's cookie: Auxio's `size_fast_scroll_popup`. */
+
+/**
+ * The shell every library list screen renders inside. It keeps the screen's root layout shape
+ * identical across all three states, so nothing reflows as data arrives.
+ *
+ * [LibraryContent.Loading] - and an empty library still being scanned for the first time - draws skeleton rows rather
+ * than either an empty-library message (which would be a lie) or blank space (which reads as a broken screen): rows of
+ * the real rows' shape where the real rows will be, so the list simply takes their place. [emptyAction] is what an empty
+ * list offers to fill it, if anything.
+ *
+ * Rows arrive one after another as they first show - see [RowReveal]: with the launch, and wherever they take the
+ * placeholders' place, which arrive so themselves. A list ready from its first frame, with no launch under way, shows as it is.
+ */
+@Composable
+internal fun <T> LibraryListContent(
+    content: LibraryContent<T>,
+    hasPermission: Boolean,
+    isScanning: Boolean,
+    emptyTitle: String,
+    emptyMessage: String,
+    modifier: Modifier = Modifier,
+    emptyAction: EmptyStateAction? = null,
+    body: @Composable (List<T>) -> Unit,
+) {
+    val isLoading = content is LibraryContent.Loading ||
+        (content is LibraryContent.Ready && content.items.isEmpty() && isScanning && hasPermission)
+    val revealsRows = remember { isLoading } || LocalLaunchEntrance.current != null
+    val rowReveal = rowReveal(key = isLoading, reveals = revealsRows)
+    Box(modifier = modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalRowReveal provides rowReveal) {
+            when {
+                isLoading -> SkeletonRows()
+                content is LibraryContent.Ready && content.items.isEmpty() -> {
+                    val (title, message) = emptyLibraryStateContent(
+                        hasPermission = hasPermission,
+                        isScanning = isScanning,
+                        emptyTitle = emptyTitle,
+                        emptyMessage = emptyMessage,
+                    )
+                    // Without access to the device's files there is no library to show: the list offers it in its place.
+                    val requestStorageAccess = rememberPermissionRequest(AppPermission.STORAGE)
+                    val storageAccessAction = EmptyStateAction(stringResource(R.string.library_permission_allow), MusicIcons.Folder, requestStorageAccess)
+                    MusicEmptyState(title = title, message = message, action = if (hasPermission) emptyAction else storageAccessAction)
+                }
+                content is LibraryContent.Ready -> body(content.items)
+            }
+        }
+    }
+}
+
+/**
+ * The library's shortcuts, collapsing over the tab lists - provided by [LibraryPagerScreen] around its tabs.
+ * A tab's list drives them as a detail screen's list drives its header - nested right around the list, so
+ * they have its scroll before its pull to refresh or its overscroll - and carries them along when it is
+ * scrolled for the user: open as it goes back to its top, collapsed as it goes to its playing row. Null for
+ * a list beneath none.
+ */
+internal val LocalLibraryShortcutsHeader = staticCompositionLocalOf<CollapsingHeaderState?> { null }
+
+/**
+ * [LibraryListContent] plus the `LazyColumn` every list screen was writing out by hand.
+ *
+ * Centralising it is what makes stable [key]s and a [contentType] non-optional. Without a key, Lazy
+ * layouts fall back to item *position*, so when the library changes every row is treated as a
+ * different row: scroll position jumps, and nothing can be reused. With one, a rescan that reorders
+ * or inserts a few tracks moves the existing rows instead of rebuilding the list.
+ *
+ * Every list has the fast scroller; one given [sectionOf] - the section its sort puts a row in - also
+ * names that section in the scroller's popup.
+ *
+ * Its rows join [selection], and a long press drags across them - see [DragSelection]. Given [onRefresh],
+ * pulling it down past its top refreshes it - see [MusicPullToRefreshBox].
+ *
+ * Given [headingOf], rows sharing a heading - which [content] keeps together - are laid out in a [section]
+ * under it, once the list holds more than one; a single heading would only repeat the tab's name.
+ *
+ * Given [isCurrent] - the rule its rows mark the playing one by - the screen's scroll button offers a way
+ * to that row while it is off screen, showing the playing bars while [isPlaying]: see [PlayingRow].
+ */
+@Composable
+internal fun <T> LibraryList(
+    content: LibraryContent<T>,
+    selection: SelectionState,
+    hasPermission: Boolean,
+    isScanning: Boolean,
+    emptyTitle: String,
+    emptyMessage: String,
+    key: (T) -> Any,
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState(),
+    onReorder: ((List<T>) -> Unit)? = null,
+    sectionOf: ((T) -> String?)? = null,
+    onRefresh: (suspend () -> Unit)? = null,
+    headingOf: ((T) -> String)? = null,
+    isCurrent: ((T) -> Boolean)? = null,
+    isPlaying: () -> Boolean = { false },
+    row: @Composable (T) -> Unit,
+) {
+    val sectionList = rememberSectionListState()
+    val shortcutsHeader = LocalLibraryShortcutsHeader.current
+    val shortcutsCollapse = remember(shortcutsHeader) { shortcutsHeader?.nestedScrollConnection() }
+    LibraryListContent(
+        content = content,
+        hasPermission = hasPermission,
+        isScanning = isScanning,
+        emptyTitle = emptyTitle,
+        emptyMessage = emptyMessage,
+        modifier = modifier,
+    ) { items ->
+        val groups = remember(items, headingOf) { headingOf?.let(items::groupBy)?.toList().orEmpty() }
+        val isSectioned = groups.size > 1
+        // The row at each of the list's indices - null for a heading or the line above it - so the fast
+        // scroller names what is under it, and a drag selects only the rows laid out.
+        val laidOutRows: List<T?> = if (!isSectioned) {
+            items
+        } else {
+            groups.flatMapIndexed { index, (heading, rows) ->
+                List(if (index > 0) 2 else 1) { null } + if (sectionList.isCollapsed(heading)) emptyList() else rows
+            }
+        }
+        // Found among the rows laid out, and found again only as they or the playing row change.
+        val playingRow = remember(laidOutRows, isCurrent, isPlaying) {
+            derivedStateOf {
+                isCurrent?.let { marks -> laidOutRows.indexOfFirst { row -> row != null && marks(row) } }
+                    ?.takeIf { it >= 0 }
+                    ?.let { index -> PlayingRow(index, isPlaying()) }
+            }
+        }
+        // One band for the list, its fast scroller's thumb and its pull to refresh.
+        val overscroll = rememberRubberBandOverscroll()
+        MusicPullToRefreshBox(overscroll = overscroll, onRefresh = onRefresh, modifier = Modifier.fillMaxSize()) {
+            FastScroller(
+                listState = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(shortcutsCollapse?.let(Modifier::nestedScroll) ?: Modifier),
+                sectionAt = sectionOf?.let { section -> { index -> laidOutRows.getOrNull(index)?.let(section) } },
+                scrollToTop = {
+                    coroutineScope {
+                        shortcutsHeader?.let { launch { it.animateTo(collapsed = false) } }
+                        listState.scrollBackToTop()
+                    }
+                },
+                playingRow = { playingRow.value },
+                scrollToRow = { index ->
+                    coroutineScope {
+                        shortcutsHeader?.let { launch { it.animateTo(collapsed = true) } }
+                        listState.scrollToRow(index)
+                    }
+                },
+                overscroll = overscroll,
+            ) { overscrollEffect ->
+                if (onReorder != null) {
+                    // The same list state as the plain list below, so the rows keep their place when handles
+                    // appear and again when they go: a list state belongs to the list, not to one of its modes.
+                    ReorderableColumn(
+                        items = items,
+                        key = key,
+                        listState = listState,
+                        overscrollEffect = overscrollEffect,
+                        onReorder = onReorder,
+                        row = row,
+                    )
+                    return@FastScroller
+                }
+                KeepAtTopWhenRowsChange(listState = listState, rows = items)
+                val selectableKeys = remember(laidOutRows) { laidOutRows.mapNotNull(::selectionKeyOf) }
+                val dragSelection = rememberDragSelection(selection, listState, selectableKeys)
+                CompositionLocalProvider(LocalDragSelection provides dragSelection) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .dragSelection(dragSelection),
+                        contentPadding = PaddingValues(top = ListTopGap, bottom = LocalBottomContentPadding.current),
+                        overscrollEffect = overscrollEffect,
+                    ) {
+                        val rows: LazyListScope.(List<T>) -> Unit = { rowItems ->
+                            itemsIndexed(
+                                items = rowItems,
+                                key = { _, item -> key(item) },
+                                // Every row in these lists is the same composable shape, so telling Compose that
+                                // lets it reuse a scrolled-off row's slot table wholesale instead of rebuilding it.
+                                contentType = { _, _ -> LIST_ROW_CONTENT_TYPE },
+                            ) { index, item ->
+                                Box(modifier = Modifier.revealedRow(index)) { row(item) }
+                            }
+                        }
+                        if (isSectioned) {
+                            groups.forEachIndexed { index, (heading, rowItems) ->
+                                section(key = heading, title = heading, state = sectionList, hasDividerAbove = index > 0) {
+                                    rows(rowItems)
+                                }
+                            }
+                        } else {
+                            rows(items)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A library tab's pull to refresh - a rescan of every file, told in a toast as every rescan's end is - or
+ * null while the user has it turned off.
+ */
+@Composable
+internal fun rememberLibraryRefresh(viewModel: LibraryViewModel): (suspend () -> Unit)? {
+    val isEnabled by viewModel.isPullToRefreshEnabled.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    return remember(viewModel, context, isEnabled) {
+        if (!isEnabled) {
+            null
+        } else {
+            suspend { context.toast(if (viewModel.rescanLibrary()) ScannerR.string.scan_done else ScannerR.string.scan_failed) }
+        }
+    }
+}
+
+private const val LIST_ROW_CONTENT_TYPE = "libraryRow"
+
+/**
+ * Keeps a list that was at its top at its top when its rows change.
+ *
+ * A keyed lazy list follows its first visible row wherever that row moves. Mid-list that is right - it
+ * is what keeps the user's place - but at the top there is no place being kept, and following the row
+ * is wrong: re-sorting would scroll to wherever the old first row landed instead of showing the new one.
+ *
+ * Where the list stood is read as the new rows arrive, before they are measured, and the request is
+ * made once per change of rows rather than on every recomposition, so a list scrolled away from its
+ * top is never pulled back to it.
+ */
+@Composable
+private fun KeepAtTopWhenRowsChange(listState: LazyListState, rows: List<*>) {
+    val wasAtTop = remember(rows) {
+        Snapshot.withoutReadObservation {
+            listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+        }
+    }
+    DisposableEffect(rows) {
+        if (wasAtTop) listState.requestScrollToItem(0)
+        onDispose {}
+    }
+}
+
+/** How close to an edge a drag starts scrolling the list: one row's height, as the queue uses. */
+private val ReorderAutoScrollThreshold = 72.dp
+
+/** With the first row's own half gap, the space between the section above a list and its first row: 8dp. */
+private val ListTopGap = 6.dp
+
+
+/**
+ * A list whose rows can be dragged into a new order, on the same drag system as the player's queue.
+ *
+ * Dragging starts from a handle rather than a long press, because long press already starts a
+ * selection - one gesture cannot mean both, and a handle is what the reference app uses too.
+ */
+@Composable
+private fun <T> ReorderableColumn(
+    items: List<T>,
+    key: (T) -> Any,
+    listState: LazyListState,
+    overscrollEffect: OverscrollEffect,
+    onReorder: (List<T>) -> Unit,
+    row: @Composable (T) -> Unit,
+) {
+    KeepAtTopWhenRowsChange(listState = listState, rows = items)
+    val reorderableRows = rememberReorderableRows(items, key, listState, onReorder = onReorder)
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(top = ListTopGap, bottom = LocalBottomContentPadding.current),
+        overscrollEffect = overscrollEffect,
+    ) {
+        reorderableRows(reorderableRows, key, row = row)
+    }
+}
+
+/** [items] as a drag leaves them, and the drag that moves them - see [rememberReorderableRows]. */
+internal class ReorderableRows<T>(
+    val rows: List<T>,
+    val state: ReorderableLazyListState,
+    private val onMoveTogether: (movedKeys: List<Any>, landsBefore: Any?) -> Unit,
+) {
+    /**
+     * Sets the rows of [movedKeys] down together, in that order, before the row of [landsBefore] - at the end, while it is
+     * null - wherever each of them was: a selection moved as one. Written as a drop is.
+     */
+    fun moveTogether(movedKeys: List<Any>, landsBefore: Any?) = onMoveTogether(movedKeys, landsBefore)
+}
+
+/**
+ * Rows of a [ReorderableRows] picked up together and moving: left out of the list while they move, a gap [gapHeight]
+ * tall opening before the row of [landsBefore] - or at the end, while it is null - where they would land.
+ */
+internal class MovingRows(
+    val keys: Set<Any>,
+    val landsBefore: Any?,
+    val gapHeight: Dp,
+)
+
+/**
+ * [items], draggable into a new order within [listState]'s list - whatever else that list holds.
+ *
+ * The order on screen is a copy that the drag edits as the finger moves, so rows change places under
+ * the finger and nothing waits on the database. The order the finger let go of is written once, on
+ * drop, and only when it actually differs - until then the stored order is untouched, so an abandoned
+ * drag leaves nothing half-moved. With no drag running the copy simply follows the list it mirrors.
+ *
+ * Rows are told apart by [key] rather than by where they sit in the list, so a list that has other
+ * sections above these rows moves the right ones.
+ *
+ * [listOverhang] is how much of the list lies past the screen's bottom, which the edge a drag scrolls from stands clear of.
+ */
+@Composable
+internal fun <T> rememberReorderableRows(
+    items: List<T>,
+    key: (T) -> Any,
+    listState: LazyListState,
+    listOverhang: Dp = 0.dp,
+    onReorder: (List<T>) -> Unit,
+): ReorderableRows<T> {
+    val orderedRows = remember { mutableStateListOf<T>().apply { addAll(items) } }
+    var hasDropToWrite by remember { mutableStateOf(false) }
+    var writtenOrder by remember { mutableStateOf<List<Any>?>(null) }
+    // Rows moved together are dropped with no drag of the library's running, so each such drop is counted to be written.
+    var togetherDrops by remember { mutableIntStateOf(0) }
+
+    val bottomContentPadding = LocalBottomContentPadding.current
+    val reorderableState = rememberReorderableLazyListState(
+        lazyListState = listState,
+        // The list's bottom lies under the mini player, so the edge a drag scrolls from is its top.
+        scrollThresholdPadding = PaddingValues(
+            top = ReorderAutoScrollThreshold,
+            bottom = ReorderAutoScrollThreshold + bottomContentPadding + listOverhang,
+        ),
+    ) { from, to ->
+        val fromIndex = orderedRows.indexOfFirst { key(it) == from.key }
+        val toIndex = orderedRows.indexOfFirst { key(it) == to.key }
+        if (fromIndex >= 0 && toIndex >= 0) {
+            orderedRows.add(toIndex, orderedRows.removeAt(fromIndex))
+            hasDropToWrite = true
+        }
+    }
+
+    // Written once the finger is off the row, never while it moves. Anything else that changes the
+    // list - rows arriving, a re-sort - refills the copy instead.
+    LaunchedEffect(items, reorderableState.isAnyItemDragging, togetherDrops) {
+        if (reorderableState.isAnyItemDragging) return@LaunchedEffect
+        val itemKeys = items.map(key)
+        if (hasDropToWrite) {
+            hasDropToWrite = false
+            val droppedKeys = orderedRows.map(key)
+            if (droppedKeys != itemKeys) {
+                writtenOrder = droppedKeys
+                onReorder(orderedRows.toList())
+                return@LaunchedEffect
+            }
+        }
+        // A drop is written in two parts - the arranged order, and the switch to it - so the list can
+        // arrive still in the order it was sorted by. The copy keeps what the finger left until the
+        // list catches up, and gives way at once if the rows themselves changed while it waited.
+        val awaited = writtenOrder
+        if (awaited != null && itemKeys != awaited && itemKeys.toSet() == awaited.toSet()) {
+            return@LaunchedEffect
+        }
+        writtenOrder = null
+        Snapshot.withMutableSnapshot {
+            orderedRows.clear()
+            orderedRows.addAll(items)
+        }
+    }
+
+    return remember(reorderableState) {
+        ReorderableRows(orderedRows, reorderableState) { movedKeys, landsBefore ->
+            val movedKeySet = movedKeys.toSet()
+            val rowsByKey = orderedRows.associateBy(key)
+            val moved = movedKeys.mapNotNull(rowsByKey::get)
+            val rest = orderedRows.filterNot { key(it) in movedKeySet }
+            val landing = landsBefore?.let { before -> rest.indexOfFirst { key(it) == before } }?.takeIf { it >= 0 } ?: rest.size
+            Snapshot.withMutableSnapshot {
+                orderedRows.clear()
+                orderedRows.addAll(rest.take(landing) + moved + rest.drop(landing))
+            }
+            hasDropToWrite = true
+            togetherDrops++
+        }
+    }
+}
+
+/**
+ * [reorderableRows]' rows, each draggable by the handle its row draws - but for those [moving], left out while they
+ * move, with the gap they would land in among the rest.
+ */
+internal fun <T> LazyListScope.reorderableRows(
+    reorderableRows: ReorderableRows<T>,
+    key: (T) -> Any,
+    moving: MovingRows? = null,
+    row: @Composable (T) -> Unit,
+) {
+    val rows = moving?.let { reorderableRows.rows.filterNot { item -> key(item) in it.keys } } ?: reorderableRows.rows
+    val landing = moving?.landsBefore?.let { before -> rows.indexOfFirst { key(it) == before } }?.takeIf { it >= 0 } ?: rows.size
+    val rowItems: LazyListScope.(List<T>) -> Unit = { shown ->
+        // Each row animates itself - still while dragged, as the rest of a section moves otherwise.
+        withoutItemAnimation().items(
+            items = shown,
+            key = key,
+            contentType = { LIST_ROW_CONTENT_TYPE },
+        ) { item ->
+            ReorderableItem(state = reorderableRows.state, key = key(item), animateItemModifier = sectionItemAnimation()) {
+                // The row draws the handle itself, beside its menu button, and gives it this gesture.
+                CompositionLocalProvider(LocalDragHandle provides Modifier.draggableHandle()) {
+                    row(item)
+                }
+            }
+        }
+    }
+    if (moving == null) {
+        rowItems(rows)
+        return
+    }
+    // Split around the gap rather than told where it is, so the rows on either side keep their keys and glide around it.
+    rowItems(rows.subList(0, landing))
+    // Animated as the section animates its items, so it opens and closes as the rows glide around it.
+    item(key = MOVING_ROWS_GAP_KEY, contentType = MOVING_ROWS_GAP_KEY) {
+        Spacer(modifier = Modifier.fillMaxWidth().height(moving.gapHeight))
+    }
+    rowItems(rows.subList(landing, rows.size))
+}
+
+/** The key of the gap a moving selection would land in - see [MovingRows]. */
+private const val MOVING_ROWS_GAP_KEY = "moving-rows-gap"
+
+
+/** How many skeleton rows stand in for a list still being read, each fainter than the one above it. */
+private const val SkeletonRowCount = 5
+
+/** Each skeleton row's title and line, as wide as a real row's might be - varied, so they read as rows rather than a pattern. */
+private val SkeletonTitleWidths = listOf(148.dp, 120.dp, 164.dp, 132.dp, 140.dp)
+private val SkeletonLineWidths = listOf(96.dp, 84.dp, 108.dp, 72.dp, 90.dp)
+
+/** How long a skeleton takes to brighten, and to dim again. */
+private const val SkeletonPulseMillis = 1400
+
+/**
+ * Rows of a track row's shape - its cover, its title and its line - standing where a list still being read will be, fading
+ * toward the bottom and pulsing slowly. They take the real rows' places, so nothing moves as the list arrives.
+ */
+@Composable
+private fun SkeletonRows() {
+    val pulse by rememberInfiniteTransition(label = "skeletonPulse").animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(SkeletonPulseMillis, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "skeletonPulse",
+    )
+    val tone = MaterialTheme.colorScheme.surfaceContainerHigh
+    // Spaced as the rows they stand in for, so nothing shifts as the real ones take their place.
+    Column(modifier = Modifier.fillMaxWidth().padding(top = ListTopGap).clearAndSetSemantics { }) {
+        repeat(SkeletonRowCount) { index ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .revealedRow(index)
+                    .padding(vertical = ListRowGap / 2)
+                    .height(64.dp)
+                    .padding(horizontal = MusicComponentStyle.ContentHorizontalPadding)
+                    .graphicsLayer { alpha = (1f - index * 0.2f).coerceAtLeast(0.12f) * pulse },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Box(modifier = Modifier.size(CoverArtDefaults.ListSize).background(tone, RoundedCornerShape(CoverArtDefaults.ListCornerRadius)))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(modifier = Modifier.size(SkeletonTitleWidths[index], 12.dp).background(tone, RoundedCornerShape(6.dp)))
+                    Box(modifier = Modifier.size(SkeletonLineWidths[index], 10.dp).background(tone, RoundedCornerShape(5.dp)))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Resolves what an empty list screen should say. A list is empty for one of three genuinely
+ * different reasons - conflating them (as a plain "no items" message would) is what caused Music to
+ * flash a "grant permission" message even when permission was already granted: the real reason was
+ * simply that the scan hadn't populated the database yet.
+ */
+@Composable
+internal fun emptyLibraryStateContent(
+    hasPermission: Boolean,
+    isScanning: Boolean,
+    emptyTitle: String,
+    emptyMessage: String,
+): Pair<String, String> = when {
+    !hasPermission -> stringResource(R.string.library_permission_title) to stringResource(R.string.library_permission_message)
+    isScanning -> stringResource(R.string.library_scanning_title) to stringResource(R.string.library_scanning_message)
+    else -> emptyTitle to emptyMessage
+}
+
+/**
+ * What a detail screen's header says about its collection - see [DetailHeader]. [cover] is drawn at
+ * the header's size; [subhead] is left out where there is nothing to say, as Auxio hides its line.
+ */
+internal class DetailHeaderContent(
+    val type: String,
+    val subhead: String?,
+    val info: String,
+    val cover: @Composable () -> Unit,
+)
+
+/** "12 tracks • 3 videos • 45:12" - a list's count, as [mediaCountLabel] words it, and how long it all plays for. */
+@Composable
+internal fun trackCountAndDuration(tracks: List<Track>): String =
+    listOf(mediaCountLabel(tracks), formatDuration(tracks.sumOf { it.durationMs })).joinToString(InfoSeparator)
+
+/**
+ * The whole body of a detail screen: a header that collapses into the bar, then the collection's
+ * sections, then its tracks - Auxio's detail screen, the album, artist, genre, playlist and folder
+ * screens alike, and the listening histories.
+ *
+ * The header ([DetailScaffold]) is the collection's cover, kind, name, [header]'s lines about it, and
+ * Play and Shuffle, which move up into the bar as the header collapses. Below it come
+ * [TrackListDetailViewModel.sections] - an artist's albums, a genre's artists - and last the tracks,
+ * whose heading carries the sort button, as Auxio's songs section does. [groupsByDisc] splits an
+ * album's tracks under a heading per disc, once there is more than one.
+ *
+ * The tracks' heading carries search beside sort. The bar's menu is [collection]'s own actions -
+ * exactly what its row's options sheet lists, minus View - carried out the way the sheet carries them
+ * out; a screen that closes once its collection is deleted goes back. A list that is no collection of
+ * its own - Recent, Most played - offers Export in their place. Searching narrows the tracks alone, in
+ * a field in the bar with the results straight under it: the header and the other sections step
+ * aside. A [removableList] - a playlist's, or a listening history - is one tracks can be taken out of: its
+ * tracks' sheets and its selection bar both offer removing, which asks first and reports how it went.
+ */
+@Composable
+internal fun TrackListDetail(
+    title: String,
+    header: DetailHeaderContent,
+    onBack: () -> Unit,
+    viewModel: TrackListDetailViewModel,
+    emptyMessage: String,
+    collection: OptionsTarget?,
+    modifier: Modifier = Modifier,
+    trackOptionsContext: TrackOptionsContext = TrackOptionsContext.LIST,
+    groupsByDisc: Boolean = false,
+    trackSubtitle: ((Track) -> String)? = null,
+    removableList: RemovableTrackList? = (collection as? OptionsTarget.ForPlaylist)?.let { RemovableTrackList.Playlist(it.playlist) },
+) {
+    val tracks by viewModel.tracks.collectAsStateWithLifecycle()
+    val trackSections by viewModel.trackSections.collectAsStateWithLifecycle()
+    val sections by viewModel.sections.collectAsStateWithLifecycle()
+    val playback by viewModel.playback.collectAsStateWithLifecycle()
+    val resumePositionsMs = viewModel.resumePositionsMs.collectAsStateWithLifecycle()
+    val selection = rememberSelectionState()
+    val context = LocalContext.current
+    val navigator = LocalNavigator.current
+    val collectionActions = rememberOptionsActions()
+    val headerState = rememberDetailHeaderState()
+    var searchQuery by remember { mutableStateOf<String?>(null) }
+    var isSortSheetOpen by remember { mutableStateOf(false) }
+    var optionsTarget by remember { mutableStateOf<OptionsTarget?>(null) }
+    var isCollectionOptionsOpen by remember { mutableStateOf(false) }
+    // The selected tracks waiting on the user to confirm removing them, in the order they were selected.
+    var removingTracks by remember { mutableStateOf<List<Track>>(emptyList()) }
+    val sort = viewModel.sort
+    val favorites by collectionActions.viewModel.favorites.collectAsStateWithLifecycle()
+    // Known from the screen itself rather than its collection, so the heart takes its place on the first frame.
+    val favoriteItems = remember(viewModel) { favoriteItemsOf(viewModel.playbackParent) }
+    val hasTracks = tracks.itemsOrEmpty.isNotEmpty()
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument(M3U_MIME_TYPE),
+    ) { uri ->
+        if (uri != null) viewModel.exportTo { context.contentResolver.openOutputStream(uri) }
+    }
+
+    // Searching the list rather than re-querying: the rows are already here, and a playlist's order is
+    // still the order its equally good matches keep.
+    val visibleTracks = tracks.searchedFor(searchQuery) { listOf(it.title, it.artist, it.album) }
+
+    // Handles appear with the context bar: dragging is something done to a selection, so an ordinary
+    // tap-to-play list is never cluttered by them. A search has narrowed the list already, so a drop
+    // would write an order missing every track out of sight. Dragging works whatever the list is sorted
+    // by: the drop keeps the order it ended on and puts the list in it, so what was dragged is what stays.
+    val canReorder = sort?.canArrange == true && searchQuery.isNullOrBlank() && selection.isActive
+    val reorderableRows = if (canReorder) {
+        val listOverhang = with(LocalDensity.current) { headerState.listOverhangPx.toDp() }
+        rememberReorderableRows(visibleTracks.itemsOrEmpty, { track -> track.id }, headerState.listState, listOverhang) { reordered ->
+            viewModel.arrange(reordered.map { it.id })
+        }
+    } else {
+        null
+    }
+
+    // Which sections are folded away - see [section].
+    val sectionList = rememberSectionListState()
+    // A hand-made order is the user's across discs, so it is never split up by them.
+    val sortOrder by remember(sort) { sort?.order ?: flowOf(null) }.collectAsStateWithLifecycle(sort?.currentOrder())
+    val isArranged = sortOrder?.criterion == SortCriterion.CUSTOM
+    // The tracks by disc, where they are grouped so and span more than one - Auxio's discs. Not while
+    // searched: the results are ranked, best first, across every disc.
+    val isSearched = !searchQuery.isNullOrBlank()
+    val discs = remember(visibleTracks, groupsByDisc, isArranged, isSearched) {
+        visibleTracks.itemsOrEmpty.groupBy { it.discNumber }.takeIf { groupsByDisc && !isArranged && !isSearched && it.size > 1 }
+    }
+    // What a drag selects across: the tracks on show, never those folded away out of sight.
+    val draggableTracks = remember(visibleTracks, discs, sectionList.collapsedKeys) {
+        when {
+            sectionList.isCollapsed(TRACKS_SECTION_KEY) -> emptyList()
+            discs != null -> discs.filterKeys { !sectionList.isCollapsed(discSectionKey(it)) }.values.flatten()
+            else -> visibleTracks.itemsOrEmpty
+        }
+    }
+
+    // Long pressing a selected track, where they can be put in a new order, picks the whole selection up to move it.
+    val dragSelection = rememberDragSelection(
+        selection = selection,
+        listState = headerState.listState,
+        orderedKeys = remember(draggableTracks) { draggableTracks.map { SelectionKey.Track(it.id) } },
+        onMoveSelection = reorderableRows?.let { rows ->
+            { keys, landsBefore ->
+                rows.moveTogether(keys.filterIsInstance<SelectionKey.Track>().map { it.trackId }, (landsBefore as SelectionKey.Track?)?.trackId)
+            }
+        },
+    )
+    val move = dragSelection.move
+    val movingRows = move?.let {
+        MovingRows(
+            keys = it.keys.filterIsInstance<SelectionKey.Track>().mapTo(HashSet()) { key -> key.trackId },
+            landsBefore = (it.landsBefore as SelectionKey.Track?)?.trackId,
+            gapHeight = with(LocalDensity.current) { it.rowHeightPx.toDp() },
+        )
+    }
+
+    // Read here, for what is built outside composition: the bar's remembered actions, and the list's rows.
+    val playLabel = stringResource(R.string.library_play)
+    val shuffleLabel = stringResource(R.string.library_shuffle)
+    val tracksTitle = stringResource(R.string.library_tracks_title)
+    val searchLabel = stringResource(R.string.library_search)
+    val sortButton = sort?.let { sortAction { isSortSheetOpen = true } }
+    val noDiscTitle = stringResource(R.string.library_no_disc)
+    val resources = LocalContext.current.resources
+
+    val collapse = remember(headerState, hasTracks, playLabel, shuffleLabel) {
+        TopBarCollapse(
+            progress = { headerState.collapse },
+            play = TopBarAction(label = playLabel, icon = MusicIcons.Play, enabled = hasTracks) {
+                viewModel.onPlayAll(shuffled = false)
+            },
+            shuffle = TopBarAction(label = shuffleLabel, icon = MusicIcons.Shuffle, enabled = hasTracks) {
+                viewModel.onPlayAll(shuffled = true)
+            },
+        )
+    }
+
+    // Every row swipes to play next or join the queue - see [OptionsSwipe.QUEUE].
+    val trackRow: @Composable (Track) -> Unit = { track ->
+        CompositionLocalProvider(
+            LocalSwipeActions provides rememberOptionsSwipeActions(OptionsSwipe.QUEUE, collectionActions, OptionsTarget.ForTrack(track)),
+        ) {
+            TrackRow(
+                track = track,
+                isCurrent = { playback.marks(track) },
+                isPlaying = { playback.isPlaying },
+                selection = selection,
+                onClick = { viewModel.onTrackClick(track) },
+                onOpenOptions = {
+                    optionsTarget = OptionsTarget.ForTrack(
+                        track = track,
+                        context = trackOptionsContext,
+                        queueSource = tracks.itemsOrEmpty,
+                        queueParent = viewModel.playbackParent,
+                        removableFrom = removableList,
+                    )
+                },
+                subtitle = trackSubtitle?.invoke(track),
+                resumePositionMs = { resumePositionsMs.value[track.id] ?: 0L },
+            )
+        }
+    }
+
+    SelectionOptionsHost(selection) { openSelectionOptions, _ ->
+        Box(modifier = modifier) {
+            DetailScaffold(
+                state = headerState,
+                bar = {
+                    MusicTopAppBar(
+                        title = title,
+                        onNavigateBack = onBack,
+                        actions = buildList {
+                            if (collection == null) {
+                                add(
+                                    TopBarAction(label = OptionsAction.EXPORT.label, icon = OptionsAction.EXPORT.icon) {
+                                        exportLauncher.launch("$title.m3u")
+                                    },
+                                )
+                            }
+                            // The collection's options in its sheet, as its row offers them - never a menu of its own.
+                            if (collection != null) add(optionsSheetAction { isCollectionOptionsOpen = true })
+                        },
+                        search = searchQuery?.let { query ->
+                            TopBarSearch(
+                                query = query,
+                                onQueryChange = { searchQuery = it },
+                                onClose = { searchQuery = null },
+                            )
+                        },
+                        selection = selection.toLibraryTopBarSelection(
+                            listKeys = viewModel::selectableKeys,
+                            actions = listOfNotNull(
+                                removableList?.removeAction?.let { action ->
+                                    TopBarAction(label = action.label, icon = action.icon) {
+                                        val tracksById = tracks.itemsOrEmpty.associateBy { it.id }
+                                        removingTracks = selection.selectedKeys.filterIsInstance<SelectionKey.Track>()
+                                            .mapNotNull { tracksById[it.trackId] }
+                                    }
+                                },
+                            ),
+                            onMoreOptions = openSelectionOptions,
+                        ),
+                        collapse = collapse,
+                    )
+                },
+                header = {
+                    DetailHeader(
+                        cover = header.cover,
+                        type = header.type,
+                        name = title,
+                        subhead = header.subhead,
+                        info = header.info,
+                        onPlay = { viewModel.onPlayAll(shuffled = false) },
+                        onShuffle = { viewModel.onPlayAll(shuffled = true) },
+                        playLabel = stringResource(R.string.library_play),
+                        shuffleLabel = stringResource(R.string.library_shuffle),
+                        isPlayable = hasTracks,
+                        favorite = favoriteItems?.let { items ->
+                            val isFavorite = favorites.containsAll(items)
+                            FavoriteToggle(isFavorite) { collectionActions.viewModel.setFavorite(items, !isFavorite) }
+                        },
+                    )
+                },
+                isHeaderAside = searchQuery != null,
+                isReordering = { reorderableRows?.state?.isAnyItemDragging == true },
+                contentKey = sections to visibleTracks,
+                playingKey = { playback.currentTrack?.id },
+                isPlaying = { playback.isPlaying },
+                // A track's row is keyed by its id; the rows of every other kind have no section of their own.
+                sectionOfKey = remember(trackSections, tracks) {
+                    trackSections?.let { sectionOf ->
+                        val tracksById = tracks.itemsOrEmpty.associateBy { it.id }
+                        val sectionOfKey: (Any) -> String? = { key -> (key as? Long)?.let(tracksById::get)?.let(sectionOf) }
+                        sectionOfKey
+                    }
+                },
+                dragSelection = dragSelection,
+            ) {
+                if (searchQuery == null) {
+                    sections.forEachIndexed { index, section ->
+                        section(
+                            key = "detail-${section.titleRes}",
+                            // Read as the rows are built, from the section itself: they are built again as [sections] changes,
+                            // ahead of the composition that would bring anything worked out from it up to date.
+                            title = resources.getString(section.titleRes),
+                            state = sectionList,
+                            hasDividerAbove = index > 0,
+                        ) {
+                            when (section) {
+                                is DetailSection.Albums -> items(section.albums, key = { "album-${it.id}" }) { album ->
+                                    CompositionLocalProvider(
+                                        LocalSwipeActions provides rememberOptionsSwipeActions(OptionsSwipe.QUEUE, collectionActions, OptionsTarget.ForAlbum(album)),
+                                    ) {
+                                        AlbumRow(
+                                            album = album,
+                                            selection = null,
+                                            isCurrent = { playback.marks(album) },
+                                            isPlaying = { playback.isPlaying },
+                                            onClick = { navigator.go(AlbumDetailScreen(album.id)) },
+                                            onOpenOptions = { optionsTarget = OptionsTarget.ForAlbum(album) },
+                                            // Every album here is the artist's, so it is told apart by when it came out.
+                                            subtitle = album.year?.toString() ?: stringResource(R.string.library_no_date),
+                                        )
+                                    }
+                                }
+                                is DetailSection.Artists -> items(section.artists, key = { "artist-${it.id}" }) { artist ->
+                                    CompositionLocalProvider(
+                                        LocalSwipeActions provides rememberOptionsSwipeActions(OptionsSwipe.QUEUE, collectionActions, OptionsTarget.ForArtist(artist)),
+                                    ) {
+                                        ArtistRow(
+                                            artist = artist,
+                                            selection = null,
+                                            isCurrent = { playback.marks(artist) },
+                                            isPlaying = { playback.isPlaying },
+                                            onClick = { navigator.go(ArtistDetailScreen(artist.id)) },
+                                            onOpenOptions = { optionsTarget = OptionsTarget.ForArtist(artist) },
+                                        )
+                                    }
+                                }
+                                is DetailSection.Genres -> items(section.genres, key = { "genre-${it.id}" }) { genre ->
+                                    CompositionLocalProvider(
+                                        LocalSwipeActions provides rememberOptionsSwipeActions(OptionsSwipe.QUEUE, collectionActions, OptionsTarget.ForGenre(genre)),
+                                    ) {
+                                        GenreRow(
+                                            genre = genre,
+                                            selection = null,
+                                            isCurrent = { playback.marks(genre) },
+                                            isPlaying = { playback.isPlaying },
+                                            onClick = { navigator.go(GenreDetailScreen(genre.id)) },
+                                            onOpenOptions = { optionsTarget = OptionsTarget.ForGenre(genre) },
+                                        )
+                                    }
+                                }
+                                is DetailSection.Folders -> items(section.folders, key = { "folder-${it.isVideo}-${it.path}" }) { folder ->
+                                    CompositionLocalProvider(
+                                        LocalSwipeActions provides rememberOptionsSwipeActions(OptionsSwipe.QUEUE, collectionActions, OptionsTarget.ForFolder(folder)),
+                                    ) {
+                                        FolderRow(
+                                            folder = folder,
+                                            selection = null,
+                                            isCurrent = { playback.marks(folder) },
+                                            isPlaying = { playback.isPlaying },
+                                            onClick = { navigator.go(FolderDetailScreen(folder.path, folder.isVideo)) },
+                                            onOpenOptions = { optionsTarget = OptionsTarget.ForFolder(folder) },
+                                        )
+                                    }
+                                }
+                                is DetailSection.Playlists -> items(section.playlists, key = { "playlist-${it.id}" }) { playlist ->
+                                    CompositionLocalProvider(
+                                        LocalSwipeActions provides rememberOptionsSwipeActions(OptionsSwipe.QUEUE, collectionActions, OptionsTarget.ForPlaylist(playlist)),
+                                    ) {
+                                        PlaylistRow(
+                                            playlist = playlist,
+                                            selection = null,
+                                            isCurrent = { playback.marks(playlist) },
+                                            isPlaying = { playback.isPlaying },
+                                            onClick = { navigator.go(PlaylistDetailScreen(playlist.id)) },
+                                            onOpenOptions = { optionsTarget = OptionsTarget.ForPlaylist(playlist) },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // What acts on the tracks sits on their heading: searching them and sorting them, as one group
+                // of buttons like any other. Search is inert while its field is open in the bar, so the row
+                // keeps its shape, and opens the tracks if they were folded away; only a list whose order is its
+                // content has no sort to offer.
+                section(
+                    key = TRACKS_SECTION_KEY,
+                    title = tracksTitle,
+                    state = sectionList,
+                    actions = listOfNotNull(
+                        TopBarAction(label = searchLabel, icon = MusicIcons.Search, enabled = searchQuery == null) {
+                            sectionList.expand(TRACKS_SECTION_KEY)
+                            searchQuery = ""
+                        },
+                        sortButton,
+                    ),
+                    hasDividerAbove = searchQuery == null && sections.isNotEmpty(),
+                ) {
+                    val rows = visibleTracks.itemsOrEmpty
+                    when {
+                        visibleTracks is LibraryContent.Loading -> Unit
+                        rows.isEmpty() -> item(key = "empty-tracks") {
+                            MusicEmptyState(title = stringResource(R.string.library_no_tracks_found), message = emptyMessage)
+                        }
+                        reorderableRows != null -> reorderableRows(reorderableRows, { track -> track.id }, movingRows, trackRow)
+                        // Auxio's discs: the sorted tracks grouped by disc, each disc where its first track fell.
+                        discs != null -> discs.entries.forEachIndexed { index, (disc, discTracks) ->
+                            section(
+                                key = discSectionKey(disc),
+                                title = disc?.let { resources.getString(R.string.library_disc, it) } ?: noDiscTitle,
+                                state = sectionList,
+                                hasDividerAbove = index > 0,
+                            ) {
+                                items(discTracks, key = { it.id }, contentType = { LIST_ROW_CONTENT_TYPE }) { trackRow(it) }
+                            }
+                        }
+                        else -> items(rows, key = { it.id }, contentType = { LIST_ROW_CONTENT_TYPE }) { trackRow(it) }
+                    }
+                }
+            }
+            // The selection being moved, under the finger.
+            if (move != null) {
+                val tracksById = visibleTracks.itemsOrEmpty.associateBy { it.id }
+                val movingTracks = move.keys.filterIsInstance<SelectionKey.Track>().mapNotNull { tracksById[it.trackId] }
+                if (movingTracks.isNotEmpty()) MovingTracks(tracks = movingTracks, pointerInWindow = { move.pointerInWindow })
+            }
+        }
+    }
+
+    if (isSortSheetOpen && sort != null) {
+        SortSheet(sort = sort, onDismiss = { isSortSheetOpen = false })
+    }
+
+    optionsTarget?.let { target ->
+        OptionsSheet(target = target, onDismissRequest = { optionsTarget = null })
+    }
+
+    // Nothing is left here to show once the collection this screen is showing has been deleted.
+    if (isCollectionOptionsOpen && collection != null) {
+        OptionsSheet(target = collection, onDismissRequest = { isCollectionOptionsOpen = false }, onCollectionDeleted = onBack)
+    }
+    OptionsFollowUps(actions = collectionActions, onCollectionDeleted = onBack)
+
+    if (removableList != null && removingTracks.isNotEmpty()) {
+        RemoveFromListDialog(
+            list = removableList,
+            trackIds = removingTracks.map { it.id },
+            onDismiss = { removingTracks = emptyList() },
+            // The selection ends once the removal is confirmed; cancelling leaves every row picked.
+            onConfirmed = { selection.clear() },
+        )
+    }
+}
+
+private const val TRACKS_SECTION_KEY = "tracks"
+
+private fun discSectionKey(disc: Int?): String = "disc-$disc"
+
+/** Narrows a loaded list, leaving "still loading" alone so a search cannot look like an empty library. */
+internal fun <T> LibraryContent<T>.filterItems(predicate: (T) -> Boolean): LibraryContent<T> =
+    when (this) {
+        is LibraryContent.Loading -> this
+        is LibraryContent.Ready -> LibraryContent.Ready(items.filter(predicate))
+    }
+
+/**
+ * The rows [query] finds, best first, each searched by its [texts] - see [SearchIndex]; every row while the
+ * search is blank or closed. Indexed once per list, so a keystroke only searches.
+ */
+@Composable
+internal fun <T> List<T>.searchedFor(query: String?, texts: (T) -> List<String>): List<T> {
+    val index = remember(this) { SearchIndex(this, texts) }
+    return remember(index, query) { if (query.isNullOrBlank()) this else index.search(query).items }
+}
+
+/** A loaded list as [query] leaves it - see the list's [searchedFor] - and "still loading" as it is. */
+@Composable
+internal fun <T> LibraryContent<T>.searchedFor(query: String?, texts: (T) -> List<String>): LibraryContent<T> =
+    when (this) {
+        is LibraryContent.Loading -> this
+        is LibraryContent.Ready -> LibraryContent.Ready(items.searchedFor(query, texts))
+    }
+
+/** A list's sections, while it shows them: not while it is searched, its rows then ranked rather than sorted. */
+internal fun <T> ((T) -> String?).whileNotSearched(query: String?): ((T) -> String?)? = takeIf { query.isNullOrBlank() }
+
+/** What an empty list says - the library being empty, or the search matching nothing. */
+@Composable
+internal fun searchEmptyMessage(query: String?): String =
+    if (query.isNullOrBlank()) stringResource(R.string.library_empty_message) else stringResource(R.string.library_search_empty_message, query)

@@ -1,0 +1,369 @@
+package com.music.app.feature.library
+
+import androidx.annotation.PluralsRes
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.music.app.core.designsystem.component.InfoSeparator
+import com.music.app.core.designsystem.component.SelectionState
+import com.music.app.core.designsystem.component.MusicAlbumCover
+import com.music.app.core.designsystem.component.MusicArtistCover
+import com.music.app.core.designsystem.component.MusicCoverArt
+import com.music.app.core.designsystem.component.MusicFolderCover
+import com.music.app.core.designsystem.component.MusicGenreCover
+import com.music.app.core.designsystem.component.MusicIconButton
+import com.music.app.core.designsystem.component.MusicListRow
+import com.music.app.core.designsystem.component.MusicTrackRow
+import com.music.app.core.designsystem.component.MusicVideoRow
+import com.music.app.core.designsystem.component.MusicPlaylistCover
+import com.music.app.core.designsystem.component.title
+import com.music.app.core.designsystem.theme.MusicComponentStyle
+import com.music.app.core.model.Album
+import com.music.app.core.model.Artist
+import com.music.app.core.model.Folder
+import com.music.app.core.model.Genre
+import com.music.app.core.model.Playlist
+import com.music.app.core.model.Track
+import com.music.app.feature.library.R
+import com.music.app.feature.library.selection.selectionKeyOf
+
+/*
+ * The rows of the library's lists, laid out as Auxio's: a track as its `item_song`, and an album,
+ * artist, genre, playlist or folder as its `item_parent`. The two layouts are the same - cover, title
+ * over a line of detail, the row's own overflow button - and differ only in their cover, so every row
+ * here is a [MusicListRow] given its own.
+ *
+ * Every row also marks itself when it is the one playing: its cover shows the playing indicator and its
+ * title takes the accent, which is Auxio's `sel_selectable_text_primary` on a selected row. What counts
+ * as playing is [LibraryPlayback]'s to decide, not any row's.
+ */
+
+/** How strongly a selected row is tinted with the primary colour: Auxio's `sel_item_activated_bg`. */
+private const val SELECTED_ROW_TINT_ALPHA = 0.12f
+
+/** How long that tint takes to fade in and out: Auxio's `anim_fade_enter_duration` and exit duration. */
+private const val SELECTED_ROW_FADE_IN_MILLIS = 200
+private const val SELECTED_ROW_FADE_OUT_MILLIS = 100
+
+/** The touch target a drag handle is centred in: Auxio's `size_touchable_small`. */
+private val DragHandleTouchSize = 48.dp
+
+/**
+ * A track row: cover art, title over "artist - album" - or, for a video, the video row, its cover showing
+ * how far it was watched from [resumePositionMs].
+ *
+ * [isCurrent] and [isPlaying] are lambdas, not values, on purpose. Passed as `Boolean`s, every row in
+ * the list recomposes whenever the playing track changes, because each row's parameters changed.
+ * Read inside the row's own composition, only the row that was marked and the row that now is do any
+ * work. Every row here takes them the same way, for the same reason.
+ */
+@Composable
+internal fun TrackRow(
+    track: Track,
+    isCurrent: () -> Boolean,
+    isPlaying: () -> Boolean,
+    selection: SelectionState,
+    onClick: () -> Unit,
+    onOpenOptions: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    resumePositionMs: () -> Long = { 0L },
+) {
+    if (track.isVideo) {
+        MusicVideoRow(
+            video = track,
+            resumePositionMs = resumePositionMs,
+            isCurrent = isCurrent,
+            isPlaying = isPlaying,
+            selection = selection,
+            selectionKey = selectionKeyOf(track),
+            onClick = onClick,
+            onOpenOptions = onOpenOptions,
+            modifier = modifier,
+        )
+        return
+    }
+    MusicTrackRow(
+        track = track,
+        isCurrent = isCurrent,
+        isPlaying = isPlaying,
+        selection = selection,
+        selectionKey = selectionKeyOf(track),
+        onClick = onClick,
+        onOpenOptions = onOpenOptions,
+        modifier = modifier,
+        subtitle = subtitle,
+    )
+}
+
+/** An album row: its cover, title over its artist - or over [subtitle], where every row shares the artist. */
+@Composable
+internal fun AlbumRow(
+    album: Album,
+    // Null where the row cannot join a selection - see [MusicListRow].
+    selection: SelectionState?,
+    isCurrent: () -> Boolean,
+    isPlaying: () -> Boolean,
+    onClick: () -> Unit,
+    onOpenOptions: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    subtitle: String = album.artistName,
+) {
+    val current = isCurrent()
+    MusicListRow(
+        title = album.title,
+        subtitle = subtitle,
+        selection = selection,
+        selectionKey = selectionKeyOf(album),
+        onClick = onClick,
+        onOpenOptions = onOpenOptions,
+        modifier = modifier,
+        isCurrent = current,
+    ) { isSelected ->
+        MusicAlbumCover(
+            coverArtUri = album.coverArtUri,
+            isCurrent = current,
+            isPlaying = isPlaying(),
+            isSelected = isSelected,
+        )
+    }
+}
+
+/** An artist row: its scattered covers, name over "albums • tracks". */
+@Composable
+internal fun ArtistRow(
+    artist: Artist,
+    selection: SelectionState?,
+    isCurrent: () -> Boolean,
+    isPlaying: () -> Boolean,
+    onClick: () -> Unit,
+    onOpenOptions: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val current = isCurrent()
+    MusicListRow(
+        title = artist.name,
+        subtitle = countLabel(R.plurals.library_albums, artist.albumCount) + InfoSeparator +
+            countLabel(R.plurals.library_tracks, artist.trackCount),
+        selection = selection,
+        selectionKey = selectionKeyOf(artist),
+        onClick = onClick,
+        onOpenOptions = onOpenOptions,
+        modifier = modifier,
+        isCurrent = current,
+    ) { isSelected ->
+        MusicArtistCover(
+            coverArtUris = artist.coverArtUris,
+            seed = artist.id.hashCode(),
+            isCurrent = current,
+            isPlaying = isPlaying(),
+            isSelected = isSelected,
+        )
+    }
+}
+
+/** A genre row: its gallery of covers, name over "artists • tracks". */
+@Composable
+internal fun GenreRow(
+    genre: Genre,
+    selection: SelectionState?,
+    isCurrent: () -> Boolean,
+    isPlaying: () -> Boolean,
+    onClick: () -> Unit,
+    onOpenOptions: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val current = isCurrent()
+    MusicListRow(
+        title = genre.name,
+        subtitle = countLabel(R.plurals.library_artists, genre.artistCount) + InfoSeparator +
+            countLabel(R.plurals.library_tracks, genre.trackCount),
+        selection = selection,
+        selectionKey = selectionKeyOf(genre),
+        onClick = onClick,
+        onOpenOptions = onOpenOptions,
+        modifier = modifier,
+        isCurrent = current,
+    ) { isSelected ->
+        MusicGenreCover(
+            coverArtUris = genre.coverArtUris,
+            seed = genre.id.hashCode(),
+            isCurrent = current,
+            isPlaying = isPlaying(),
+            isSelected = isSelected,
+        )
+    }
+}
+
+/** A playlist row: its stacked covers, name over how many tracks and videos it holds. */
+@Composable
+internal fun PlaylistRow(
+    playlist: Playlist,
+    selection: SelectionState?,
+    isCurrent: () -> Boolean,
+    isPlaying: () -> Boolean,
+    onClick: () -> Unit,
+    onOpenOptions: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val current = isCurrent()
+    MusicListRow(
+        title = playlist.title,
+        subtitle = mediaCountLabel(playlist.trackCount, playlist.videoCount),
+        selection = selection,
+        selectionKey = selectionKeyOf(playlist),
+        onClick = onClick,
+        onOpenOptions = onOpenOptions,
+        modifier = modifier,
+        isCurrent = current,
+    ) { isSelected ->
+        MusicPlaylistCover(
+            coverArtUris = playlist.coverArtUris,
+            seed = playlist.id.hashCode(),
+            isCurrent = current,
+            isPlaying = isPlaying(),
+            isSelected = isSelected,
+        )
+    }
+}
+
+/** A folder row: its stacked covers, name over how many tracks it holds. */
+@Composable
+internal fun FolderRow(
+    folder: Folder,
+    selection: SelectionState?,
+    isCurrent: () -> Boolean,
+    isPlaying: () -> Boolean,
+    onClick: () -> Unit,
+    onOpenOptions: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val current = isCurrent()
+    MusicListRow(
+        title = folder.name,
+        subtitle = folder.itemCountLabel(),
+        selection = selection,
+        selectionKey = selectionKeyOf(folder),
+        onClick = onClick,
+        onOpenOptions = onOpenOptions,
+        modifier = modifier,
+        isCurrent = current,
+    ) { isSelected ->
+        MusicFolderCover(
+            coverArtUris = folder.coverArtUris,
+            seed = folder.path.hashCode(),
+            isCurrent = current,
+            isPlaying = isPlaying(),
+            isSelected = isSelected,
+        )
+    }
+}
+
+/**
+ * A row for a list of tracks with no library row of its own - Most played, pinned above the playlists.
+ *
+ * It sits among the playlists, so it is drawn as they are - the list keeps one rhythm, and it marks
+ * itself while playing like everything else. Not being a playlist, it has no options of its own: its
+ * pin stands where a playlist's options button would.
+ */
+@Composable
+internal fun TrackCollectionRow(
+    title: String,
+    seed: Int,
+    trackCount: Int,
+    videoCount: Int,
+    coverArtUris: List<String>,
+    isCurrent: () -> Boolean,
+    isPlaying: () -> Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val current = isCurrent()
+    MusicListRow(
+        title = title,
+        subtitle = mediaCountLabel(trackCount, videoCount),
+        // Not a playlist, so it can be opened but never gathered into a selection meant for playlists.
+        selection = null,
+        selectionKey = null,
+        onClick = onClick,
+        onOpenOptions = null,
+        modifier = modifier,
+        isCurrent = current,
+        isPinned = true,
+    ) { isSelected ->
+        MusicPlaylistCover(
+            coverArtUris = coverArtUris,
+            seed = seed,
+            isCurrent = current,
+            isPlaying = isPlaying(),
+            isSelected = isSelected,
+        )
+    }
+}
+
+/**
+ * The shape every library row shares: [cover], [title] over [subtitle], and the row's own overflow button
+ * - with a drag handle beside that button in a list that can be reordered.
+ *
+ * [selection] is null where the row cannot join a selection - Recent and Most played, which are not
+ * music of their own. [selectionKey] is null for a collection with no tracks, which Auxio refuses to
+ * select since it stands for nothing to act on: while a selection runs, tapping it does nothing. [cover]
+ * is told whether the row is selected, which its badge shows; [isCurrent] accents the title, the way
+ * Auxio accents the row playback came from.
+ *
+ * The overflow button stays through a selection: the row keeps one shape whatever state it is in.
+ */
+/** "1 track", "12 tracks" - a count of [noun], Auxio's count plurals, as the language counts. */
+@Composable
+internal fun countLabel(@PluralsRes noun: Int, count: Int): String = pluralStringResource(noun, count, count)
+
+/** A count of tracks, or Auxio's `def_song_count` for a list that holds none yet. */
+@Composable
+internal fun trackCountLabel(count: Int): String =
+    if (count == 0) stringResource(R.string.library_no_tracks) else countLabel(R.plurals.library_tracks, count)
+
+/**
+ * How many tracks a list holds, [videoCount] of [trackCount] being videos: "12 tracks", "3 videos" or
+ * "12 tracks • 3 videos" - or [trackCountLabel]'s "No tracks", for one that holds none yet.
+ */
+@Composable
+internal fun mediaCountLabel(trackCount: Int, videoCount: Int): String {
+    val musicCount = trackCount - videoCount
+    return when {
+        videoCount == 0 -> trackCountLabel(trackCount)
+        musicCount == 0 -> countLabel(R.plurals.library_videos, videoCount)
+        else -> countLabel(R.plurals.library_tracks, musicCount) + InfoSeparator + countLabel(R.plurals.library_videos, videoCount)
+    }
+}
+
+/** [mediaCountLabel] of [tracks]. */
+@Composable
+internal fun mediaCountLabel(tracks: List<Track>): String = mediaCountLabel(tracks.size, tracks.count { it.isVideo })
+
+/** A folder's count: of its tracks, or - for one of the Videos tab - of its videos. */
+@Composable
+internal fun Folder.itemCountLabel(): String = mediaCountLabel(trackCount, videoCount = if (isVideo) trackCount else 0)
+
+/** A folder row's key: one path can hold music and videos alike, and is then listed once for each. */
+internal val Folder.rowKey: String get() = if (isVideo) "video:$path" else path

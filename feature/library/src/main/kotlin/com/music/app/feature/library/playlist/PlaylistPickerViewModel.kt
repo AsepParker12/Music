@@ -1,0 +1,102 @@
+package com.music.app.feature.library.playlist
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.music.app.core.common.coroutines.launchOperation
+import com.music.app.core.data.LibraryContent
+import com.music.app.core.data.LibraryRepository
+import com.music.app.core.model.Album
+import com.music.app.core.model.Artist
+import com.music.app.core.model.Folder
+import com.music.app.core.model.Genre
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.Playlist
+import com.music.app.core.model.Track
+import com.music.app.feature.library.LibraryPlayback
+import com.music.app.feature.library.libraryPlayback
+import com.music.app.feature.library.selection.SelectionKey
+import com.music.app.feature.library.selection.tracksOf
+import com.music.app.feature.playback.PlaybackController
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+/**
+ * What the screens that pick tracks for a playlist read and do: the whole library, already computed
+ * once for the process, played and marked as the library's own lists are, and adding what was picked.
+ */
+@HiltViewModel
+class PlaylistPickerViewModel @Inject constructor(
+    private val repository: LibraryRepository,
+    private val playbackController: PlaybackController,
+) : ViewModel() {
+
+    val tracks: StateFlow<LibraryContent<Track>> = repository.tracks
+    val videos: StateFlow<LibraryContent<Track>> = repository.videos
+    val albums: StateFlow<LibraryContent<Album>> = repository.albums
+    val artists: StateFlow<LibraryContent<Artist>> = repository.listedArtists
+    val genres: StateFlow<LibraryContent<Genre>> = repository.genres
+    val folders: StateFlow<LibraryContent<Folder>> = repository.allFolders
+    val playlists: StateFlow<LibraryContent<Playlist>> = repository.playlists
+
+    /** The section each list's rows sit in under its library tab's sort - what the fast scroller's popup names. */
+    val trackSections: StateFlow<(Track) -> String?> = repository.trackSections
+    val videoSections: StateFlow<(Track) -> String?> = repository.videoSections
+    val albumSections: StateFlow<(Album) -> String?> = repository.albumSections
+    val artistSections: StateFlow<(Artist) -> String?> = repository.artistSections
+    val genreSections: StateFlow<(Genre) -> String?> = repository.genreSections
+    val folderSections: StateFlow<(Folder) -> String?> = repository.folderSections
+
+    /** Where each video was left - see [LibraryRepository.resumePositionsMs]. */
+    val resumePositionsMs: StateFlow<Map<Long, Long>> = repository.resumePositionsMs
+
+    /** What the rows mark as playing - see [LibraryPlayback]. */
+    val playback: StateFlow<LibraryPlayback> = libraryPlayback(playbackController, repository)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LibraryPlayback())
+
+    /**
+     * Plays [track] among the whole of the library's Tracks or Videos tab, searched or not, as that tab does - going on
+     * with it instead when it is already playing from there. See [LibraryPlayback.isReselection].
+     */
+    fun onTrackClick(track: Track) {
+        val parent = PlaybackParent.Videos.takeIf { track.isVideo }
+        if (playback.value.isReselection(track, parent)) {
+            playbackController.reselect(track)
+            return
+        }
+        val tabTracks = tabTracksOf(track)
+        val index = tabTracks.indexOfFirst { it.id == track.id }
+        if (index >= 0) playbackController.playTracks(tabTracks, index, parent)
+    }
+
+    /** The whole tab [track] is on, which it plays among - see [LibraryRepository.tabTracksOf]. */
+    fun tabTracksOf(track: Track): List<Track> = repository.tabTracksOf(track)
+
+    /**
+     * The tracks [keys] would really add to [playlistId]: in the order they were picked, each once, and
+     * none it already holds - exactly what the playlist keeps of an addition, so the confirmation counts
+     * what will actually change.
+     */
+    fun resolveAddition(playlistId: Long, keys: List<SelectionKey>, onResolved: (trackIds: List<Long>) -> Unit) {
+        viewModelScope.launch {
+            val alreadyAdded = repository.tracksOf(listOf(SelectionKey.Playlist(playlistId))).mapTo(HashSet()) { it.id }
+            onResolved(repository.tracksOf(keys).map { it.id }.distinct().filterNot { it in alreadyAdded })
+        }
+    }
+
+    /** The tracks [keys] stand for, each once, in the order they were picked - what a move into the Private Folder takes. */
+    fun resolveTracks(keys: List<SelectionKey>, onResolved: (List<Track>) -> Unit) {
+        viewModelScope.launch { onResolved(repository.tracksOf(keys).distinctBy { it.id }) }
+    }
+
+    /**
+     * Appends [trackIds] to [playlistId] and reports how it went - waited on, so the screen only leaves
+     * once the tracks are really in the playlist.
+     */
+    fun addToPlaylist(playlistId: Long, trackIds: List<Long>, onFinished: (succeeded: Boolean) -> Unit) {
+        viewModelScope.launchOperation(onFinished) { repository.addTracksToPlaylist(playlistId, trackIds) }
+    }
+}

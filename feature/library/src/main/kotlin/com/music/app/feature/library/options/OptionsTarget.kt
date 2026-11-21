@@ -1,0 +1,300 @@
+package com.music.app.feature.library.options
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
+import com.music.app.core.common.format.formatDuration
+import com.music.app.core.designsystem.component.InfoSeparator
+import com.music.app.core.designsystem.component.title
+import com.music.app.core.designsystem.component.videoFacts
+import com.music.app.core.model.Album
+import com.music.app.core.model.Artist
+import com.music.app.core.model.Folder
+import com.music.app.core.model.Genre
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.playbackParent
+import com.music.app.core.model.Playlist
+import com.music.app.core.model.Track
+import com.music.app.feature.library.R
+import com.music.app.feature.library.countLabel
+import com.music.app.feature.library.itemCountLabel
+import com.music.app.feature.library.mediaCountLabel
+import com.music.app.feature.library.options.OptionsAction.ADD_COLLECTIONS
+import com.music.app.feature.library.options.OptionsAction.ADD_TO_PRIVATE
+import com.music.app.feature.library.options.OptionsAction.ADD_TRACKS
+import com.music.app.feature.library.options.OptionsAction.ALBUM_DETAILS
+import com.music.app.feature.library.options.OptionsAction.ARTIST_DETAILS
+import com.music.app.feature.library.options.OptionsAction.AUTO_TAG
+import com.music.app.feature.library.options.OptionsAction.COUNT_PLAYS
+import com.music.app.feature.library.options.OptionsAction.DELETE
+import com.music.app.feature.library.options.OptionsAction.DELETE_FROM_DEVICE
+import com.music.app.feature.library.options.OptionsAction.EDIT
+import com.music.app.feature.library.options.OptionsAction.EDIT_TAGS
+import com.music.app.feature.library.options.OptionsAction.EXCLUDE
+import com.music.app.feature.library.options.OptionsAction.EXPORT
+import com.music.app.feature.library.options.OptionsAction.IMPORT
+import com.music.app.feature.library.options.OptionsAction.PLAY
+import com.music.app.feature.library.options.OptionsAction.PLAYLIST_ADD
+import com.music.app.feature.library.options.OptionsAction.PLAY_NEXT
+import com.music.app.feature.library.options.OptionsAction.QUEUE_ADD
+import com.music.app.feature.library.options.OptionsAction.SHARE
+import com.music.app.feature.library.options.OptionsAction.SHUFFLE
+import com.music.app.feature.library.options.OptionsAction.SONG_PROPERTIES
+import com.music.app.feature.library.options.OptionsAction.STOP_COUNTING_PLAYS
+import com.music.app.feature.library.options.OptionsAction.VIEW_DETAILS
+import com.music.app.feature.library.options.OptionsAction.BROWSE_FOLDER
+import com.music.app.feature.library.selection.SelectionKey
+import com.music.app.feature.library.trackCountLabel
+
+/**
+ * What an options sheet is showing options for, and where it was opened from - Auxio's `Menu.ForSong`,
+ * `ForAlbum`, `ForArtist`, `ForGenre` and `ForPlaylist`.
+ *
+ * The context defaults to [TrackOptionsContext.LIST] and its siblings: the plain, most-permissive menu
+ * a row reaches when nothing about where it sits narrows the choices further.
+ */
+sealed interface OptionsTarget {
+    /**
+     * [queueSource] and [queueParent] are the list [track] was opened from and what it plays as -
+     * a bare list and no parent for a track with no list around it. Playing this track plays this
+     * list from here, the same as tapping the row does; Play next, Add to queue and Add to playlist
+     * only ever touch [track] itself, whatever list it came from.
+     *
+     * [removableFrom] is the list the track is listed in, when it was opened from one it can be removed
+     * from - a playlist, or a listening history.
+     */
+    data class ForTrack(
+        val track: Track,
+        val context: TrackOptionsContext = TrackOptionsContext.LIST,
+        val queueSource: List<Track> = listOf(track),
+        val queueParent: PlaybackParent? = null,
+        val removableFrom: RemovableTrackList? = null,
+    ) : OptionsTarget
+
+    data class ForAlbum(
+        val album: Album,
+        val context: AlbumOptionsContext = AlbumOptionsContext.LIST,
+    ) : OptionsTarget
+
+    data class ForArtist(
+        val artist: Artist,
+        val context: ArtistOptionsContext = ArtistOptionsContext.LIST,
+    ) : OptionsTarget
+
+    data class ForGenre(
+        val genre: Genre,
+        val context: GenreOptionsContext = GenreOptionsContext.LIST,
+    ) : OptionsTarget
+
+    data class ForPlaylist(
+        val playlist: Playlist,
+        val context: PlaylistOptionsContext = PlaylistOptionsContext.LIST,
+    ) : OptionsTarget
+
+    /** A folder - Music's own, as Auxio has no folders: a collection like an album, that can also be excluded. */
+    data class ForFolder(
+        val folder: Folder,
+        val context: FolderOptionsContext = FolderOptionsContext.LIST,
+    ) : OptionsTarget
+
+    /**
+     * A selection, as the tracks it stands for, in the order their rows were selected - Auxio's
+     * `Menu.ForSelection` - and as the rows themselves, [keys], which favoriting it favorites each its own way.
+     */
+    data class ForSelection(val tracks: List<Track>, val keys: List<SelectionKey>) : OptionsTarget
+}
+
+/**
+ * What a collection offers - one list each, which is both its row's options sheet and its own screen's
+ * menu, so the two can never drift apart. Its own screen leaves out View, which would only open the
+ * screen already showing, as Auxio's `detail_*` menus do.
+ *
+ * A collection is never shared as a whole: sharing is for tracks, one at a time or a selection of them.
+ *
+ * Deleting from the device comes last wherever it is offered, as the one action that cannot be taken
+ * back. A playlist does not offer it: its Delete is for the playlist, and its tracks' files are the
+ * library's, not the playlist's.
+ */
+private val AlbumActions =
+    listOf(PLAY, SHUFFLE, VIEW_DETAILS, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, ARTIST_DETAILS, AUTO_TAG, EXPORT, DELETE_FROM_DEVICE)
+private val ArtistActions = listOf(PLAY, SHUFFLE, VIEW_DETAILS, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, AUTO_TAG, EXPORT, DELETE_FROM_DEVICE)
+private val GenreActions = listOf(PLAY, SHUFFLE, VIEW_DETAILS, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, AUTO_TAG, EXPORT, DELETE_FROM_DEVICE)
+private val PlaylistActions =
+    listOf(PLAY, SHUFFLE, VIEW_DETAILS, PLAY_NEXT, QUEUE_ADD, ADD_TRACKS, ADD_COLLECTIONS, EDIT, IMPORT, EXPORT, DELETE)
+/**
+ * What a video offers, wherever it was opened from: it is on no album and credited to no artist of the library's, and -
+ * played for its sound, seldom a song - has no tags to edit.
+ */
+private val VideoActions = listOf(PLAY, SHUFFLE, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, SONG_PROPERTIES, EDIT_TAGS, SHARE)
+private val FolderActions =
+    listOf(PLAY, SHUFFLE, VIEW_DETAILS, BROWSE_FOLDER, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, AUTO_TAG, EXPORT, EXCLUDE, DELETE_FROM_DEVICE)
+
+/** What [this] plays as - null for a selection, which Auxio plays from no collection at all. */
+internal val OptionsTarget.playbackParent: PlaybackParent?
+    get() = when (this) {
+        is OptionsTarget.ForTrack -> queueParent
+        is OptionsTarget.ForAlbum -> PlaybackParent.Album(album.id)
+        is OptionsTarget.ForArtist -> PlaybackParent.Artist(artist.id)
+        is OptionsTarget.ForGenre -> PlaybackParent.Genre(genre.id)
+        is OptionsTarget.ForPlaylist -> PlaybackParent.Playlist(playlist.id)
+        is OptionsTarget.ForFolder -> folder.playbackParent
+        is OptionsTarget.ForSelection -> null
+    }
+
+/**
+ * The rows an options sheet or a collection's menu lists, top to bottom - Auxio's inflated menu XML, chosen by
+ * target and context. Favoriting is the heart in the sheet's header rather than a row - see [OptionsSheet].
+ *
+ * A track offers to go into the Private Folder only while [offersAddToPrivate]: until it is set up, from past
+ * the end of Settings, nothing in the library gives it away. A collection offers to keep its plays out of Most
+ * played, or - among [uncountedParents] - to count them again, beside exporting it.
+ */
+fun OptionsTarget.actions(offersAddToPrivate: Boolean, uncountedParents: Set<PlaybackParent>): List<OptionsAction> =
+    collectionActions(offersAddToPrivate).flatMap { action ->
+        if (action == EXPORT && this !is OptionsTarget.ForSelection) {
+            listOf(if (playbackParent in uncountedParents) COUNT_PLAYS else STOP_COUNTING_PLAYS, action)
+        } else {
+            listOf(action)
+        }
+    }
+
+private fun OptionsTarget.collectionActions(offersAddToPrivate: Boolean): List<OptionsAction> = when (this) {
+    is OptionsTarget.ForTrack -> if (track.isVideo) {
+        VideoActions
+    } else {
+        when (context) {
+            TrackOptionsContext.LIST ->
+                listOf(PLAY, SHUFFLE, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, ARTIST_DETAILS, ALBUM_DETAILS, SONG_PROPERTIES, EDIT_TAGS, SHARE)
+            TrackOptionsContext.FROM_ALBUM ->
+                listOf(PLAY, SHUFFLE, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, ARTIST_DETAILS, SONG_PROPERTIES, EDIT_TAGS, SHARE)
+            TrackOptionsContext.FROM_ARTIST ->
+                listOf(PLAY, SHUFFLE, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, ALBUM_DETAILS, SONG_PROPERTIES, EDIT_TAGS, SHARE)
+        }
+    } + listOfNotNull(removableFrom?.removeAction, ADD_TO_PRIVATE.takeIf { offersAddToPrivate }, DELETE_FROM_DEVICE)
+
+    is OptionsTarget.ForAlbum -> when (context) {
+        AlbumOptionsContext.LIST -> AlbumActions
+        AlbumOptionsContext.FROM_ARTIST -> AlbumActions - ARTIST_DETAILS
+        AlbumOptionsContext.FROM_DETAIL -> AlbumActions - VIEW_DETAILS
+    }
+
+    is OptionsTarget.ForArtist -> when (context) {
+        ArtistOptionsContext.LIST -> ArtistActions
+        ArtistOptionsContext.FROM_DETAIL -> ArtistActions - VIEW_DETAILS
+    }
+
+    is OptionsTarget.ForGenre -> when (context) {
+        GenreOptionsContext.LIST -> GenreActions
+        GenreOptionsContext.FROM_DETAIL -> GenreActions - VIEW_DETAILS
+    }
+
+    is OptionsTarget.ForPlaylist -> when (context) {
+        PlaylistOptionsContext.LIST -> PlaylistActions
+        PlaylistOptionsContext.FROM_DETAIL -> PlaylistActions - VIEW_DETAILS
+    }
+
+    is OptionsTarget.ForFolder -> when (context) {
+        FolderOptionsContext.LIST -> FolderActions
+        FolderOptionsContext.FROM_DETAIL -> FolderActions - VIEW_DETAILS
+    }
+
+    is OptionsTarget.ForSelection ->
+        listOf(PLAY, SHUFFLE, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, AUTO_TAG, SHARE) +
+            // Playlists' tracks' files are the library's, as a single playlist's are: nothing here moves or deletes them.
+            if (keys.any { it is SelectionKey.Playlist }) {
+                emptyList()
+            } else {
+                listOfNotNull(ADD_TO_PRIVATE.takeIf { offersAddToPrivate }, DELETE_FROM_DEVICE)
+            }
+}
+
+/**
+ * The actions listed but not clickable - Auxio's `getDisabledItemIds`: an artist or a playlist with no
+ * tracks yet cannot be played, queued or exported, though it is still worth seeing and still worth
+ * editing or deleting. A track, an album and a genre are never disabled this way.
+ *
+ * Favorites, which Auxio has no counterpart for, can never be deleted - the rule the
+ * playlists screen's selection bar already keeps.
+ */
+fun OptionsTarget.disabledActions(): Set<OptionsAction> = when (this) {
+    is OptionsTarget.ForArtist -> if (artist.trackCount == 0) {
+        setOf(PLAY, SHUFFLE, PLAY_NEXT, QUEUE_ADD, PLAYLIST_ADD, EXPORT, DELETE_FROM_DEVICE)
+    } else {
+        emptySet()
+    }
+
+    is OptionsTarget.ForPlaylist -> buildSet {
+        if (playlist.isBuiltIn) add(DELETE)
+        if (playlist.trackCount == 0) addAll(listOf(PLAY, SHUFFLE, PLAY_NEXT, QUEUE_ADD, EXPORT))
+    }
+
+    // Videos are played for their sound, and are seldom songs to have tags found for.
+    is OptionsTarget.ForFolder -> if (folder.isVideo) setOf(AUTO_TAG) else emptySet()
+    // Tags are found for music alone: a selection holding any video is no selection to tag.
+    is OptionsTarget.ForSelection -> if (tracks.any { it.isVideo }) setOf(AUTO_TAG) else emptySet()
+
+    is OptionsTarget.ForTrack,
+    is OptionsTarget.ForAlbum,
+    is OptionsTarget.ForGenre,
+    -> emptySet()
+}
+
+/** What kind of thing the sheet is showing options for - Auxio's `lbl_song`/`lbl_album`/etc, over the name. */
+@Composable
+fun OptionsTarget.typeLabel(): String = stringResource(
+    when (this) {
+        is OptionsTarget.ForTrack -> if (track.isVideo) R.string.options_type_video else R.string.options_type_track
+        is OptionsTarget.ForAlbum -> R.string.options_type_album
+        is OptionsTarget.ForArtist -> R.string.options_type_artist
+        is OptionsTarget.ForGenre -> R.string.options_type_genre
+        is OptionsTarget.ForPlaylist -> R.string.options_type_playlist
+        is OptionsTarget.ForFolder -> R.string.options_type_folder
+        is OptionsTarget.ForSelection -> R.string.options_type_selection
+    },
+)
+
+/**
+ * Whether pressing the sheet's name renames it: a track or a video, by its file's name; a playlist the user made. Everything
+ * else is named by what its tracks say - an album, an artist - or by the app.
+ */
+val OptionsTarget.isRenamable: Boolean
+    get() = when (this) {
+        is OptionsTarget.ForTrack -> true
+        is OptionsTarget.ForPlaylist -> !playlist.isBuiltIn
+        else -> false
+    }
+
+/** The sheet's headline - Auxio's `menuName`. */
+@Composable
+fun OptionsTarget.name(): String = when (this) {
+    is OptionsTarget.ForTrack -> track.title
+    is OptionsTarget.ForAlbum -> album.title
+    is OptionsTarget.ForArtist -> artist.name
+    is OptionsTarget.ForGenre -> genre.name
+    is OptionsTarget.ForPlaylist -> playlist.title
+    is OptionsTarget.ForFolder -> folder.name
+    is OptionsTarget.ForSelection -> mediaCountLabel(tracks)
+}
+
+/** The line under the name - Auxio's `menuInfo`. */
+@Composable
+fun OptionsTarget.infoLine(): String = when (this) {
+    is OptionsTarget.ForTrack -> if (track.isVideo) track.videoFacts() else track.artist
+    is OptionsTarget.ForAlbum -> album.artistName
+    is OptionsTarget.ForArtist ->
+        albumCountLabel(artist.albumCount) + InfoSeparator + trackCountLabel(artist.trackCount)
+    is OptionsTarget.ForGenre ->
+        artistCountLabel(genre.artistCount) + InfoSeparator + trackCountLabel(genre.trackCount)
+    is OptionsTarget.ForPlaylist -> mediaCountLabel(playlist.trackCount, playlist.videoCount)
+    is OptionsTarget.ForFolder -> folder.itemCountLabel()
+    is OptionsTarget.ForSelection -> formatDuration(tracks.sumOf { it.durationMs })
+}
+
+/** A count of albums, or Auxio's `def_album_count` for one that holds none. */
+@Composable
+private fun albumCountLabel(count: Int): String =
+    if (count == 0) stringResource(R.string.library_no_albums) else countLabel(R.plurals.library_albums, count)
+
+/** A count of artists, or Auxio's `def_artist_count` for one that holds none. */
+@Composable
+private fun artistCountLabel(count: Int): String =
+    if (count == 0) stringResource(R.string.library_no_artists) else countLabel(R.plurals.library_artists, count)

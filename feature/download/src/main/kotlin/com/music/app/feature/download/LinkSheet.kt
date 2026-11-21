@@ -1,0 +1,682 @@
+package com.music.app.feature.download
+
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.text.format.DateFormat
+import android.text.format.Formatter
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.ListItemShapes
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SplitButtonDefaults
+import androidx.compose.material3.SplitButtonLayout
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil3.compose.AsyncImage
+import com.music.app.core.designsystem.component.InfoSeparator
+import com.music.app.core.designsystem.component.SelectionState
+import com.music.app.core.designsystem.component.MusicActionButtonGroup
+import com.music.app.core.designsystem.component.MusicConnectedChoice
+import com.music.app.core.designsystem.component.MusicCoverArt
+import com.music.app.core.designsystem.component.MusicGroupRow
+import com.music.app.core.designsystem.component.animateProgressAsState
+import com.music.app.core.designsystem.component.MusicListRow
+import com.music.app.core.designsystem.component.MusicRowGroup
+import com.music.app.core.designsystem.component.MusicValueRow
+import com.music.app.core.designsystem.component.actionButton
+import com.music.app.core.designsystem.component.sheet.MusicBottomSheet
+import com.music.app.core.designsystem.component.sheet.SheetReveal
+import com.music.app.core.designsystem.component.sheet.SheetSwap
+import com.music.app.core.designsystem.component.sheet.MusicColumnBottomSheet
+import com.music.app.core.designsystem.component.shimmer
+import com.music.app.core.designsystem.player.formatPlaybackTime
+import com.music.app.core.designsystem.theme.buttonPressShapes
+import com.music.app.core.downloader.LinkPreview
+import com.music.app.core.downloader.MediaInfo
+import com.music.app.core.downloader.PlaylistEntry
+import com.music.app.core.downloader.RuntimeState
+import com.music.app.core.downloader.estimatedSizeBytes
+import com.music.app.core.downloader.pickedCaptions
+import com.music.app.core.downloader.transcribersFor
+import com.music.app.core.model.DownloadChoices
+import com.music.app.core.model.DownloadFailure
+import com.music.app.core.model.DownloadKind
+import com.music.app.core.model.DownloadOptions
+import com.music.app.core.model.DownloaderPreferences
+import com.music.app.core.model.toFileName
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.feature.download.browser.BrowserScreen
+import com.music.app.feature.tageditor.LyricsPick
+import com.music.app.feature.tageditor.RenameFileDialog
+import com.music.app.feature.tageditor.VideoSong
+import com.music.app.feature.tageditor.lyrics.LyricsTiming
+import com.music.app.feature.tageditor.tags.TagField
+import com.music.app.core.designsystem.icon.MusicIcons
+
+/**
+ * The link given, in a sheet over the list: what it leads to, enough to tell at a glance it is the right thing, then Audio or
+ * Video - picked, never downloading by itself - the choices that change most downloads, each showing its value, everything
+ * else a row away, and Download, saying what it comes to. A playlist's videos are picked first. A link that needs the
+ * downloader offers it here, for this link alone.
+ */
+@Composable
+internal fun LinkSheet(sheet: LinkSheet, viewModel: DownloadViewModel) {
+    when {
+        sheet is LinkSheet.Found && sheet.info.isPlaylist -> PlaylistSheet(sheet.info, viewModel)
+        // One call for the read and the read in full: the same sheet stays open, filled in as the read lands.
+        sheet is LinkSheet.Reading || sheet is LinkSheet.Found ->
+            MediaSheet(info = (sheet as? LinkSheet.Found)?.info, preview = (sheet as? LinkSheet.Reading)?.preview, viewModel = viewModel)
+        sheet is LinkSheet.NeedsDownloader -> DownloaderSheet(sheet, viewModel)
+        sheet is LinkSheet.Unreadable -> UnreadableSheet(sheet, viewModel)
+        sheet is LinkSheet.AlreadySaved -> AlreadySavedSheet(sheet, viewModel)
+    }
+}
+
+/** Which picker the download sheet has open over it. */
+private enum class MediaPicker { SONG, QUALITY, AUDIO_TRACK, SUBTITLES, MORE_OPTIONS }
+
+/**
+ * One video - [info], or while it is read what [preview] shows of it already, a skeleton for the rest. Every row is there
+ * from the start, showing the choices it will download with, so nothing moves once the read is in: Download alone waits on it.
+ */
+@Composable
+private fun MediaSheet(info: MediaInfo?, preview: LinkPreview?, viewModel: DownloadViewModel) {
+    val context = LocalContext.current
+    val choices by viewModel.sheetChoices.collectAsStateWithLifecycle()
+    val options by viewModel.options.collectAsStateWithLifecycle()
+    val pickedFormat by viewModel.pickedFormat.collectAsStateWithLifecycle()
+    val song by viewModel.song.collectAsStateWithLifecycle()
+    val check by viewModel.libraryCheck.collectAsStateWithLifecycle()
+    val preferences by viewModel.preferences.collectAsStateWithLifecycle()
+    var picker by remember { mutableStateOf<MediaPicker?>(null) }
+    var isNaming by remember { mutableStateOf(false) }
+    // A link that serves a file is downloaded as that file: no kind to pick, nothing of a video's to choose - its name, its size.
+    val kind = info?.kindFor(choices.kind) ?: choices.kind
+    val size = info?.estimatedSizeBytes(choices.copy(kind = kind), pickedFormat)?.let { Formatter.formatShortFileSize(context, it) }
+    MusicBottomSheet(
+        onDismissRequest = viewModel::onDismissLink,
+        header = {
+            MediaHeader(
+                info,
+                preview,
+                showsThumbnail = !viewModel.preferences.collectAsStateWithLifecycle().value.hidesPreview,
+                fileName = options.fileName,
+                onName = { isNaming = true }.takeIf { info != null },
+            )
+        },
+    ) {
+        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
+            if (kind != DownloadKind.FILE) {
+                KindChoice(choices.kind) { picked -> viewModel.onSheetChoicesChange { it.copy(kind = picked) } }
+                // The rows a kind has, crossfaded into another's as it is picked - and as the song row comes and goes.
+                SheetSwap(choices.kind to choices.savesAsSong, modifier = Modifier.padding(top = 16.dp)) { (shownKind, savesAsSong) ->
+                    // Each as the kind it is shown for: the one fading out keeps its own look until it is gone.
+                    val shown = choices.copy(kind = shownKind)
+                    val quality = qualityRow(info, shown) { picker = MediaPicker.QUALITY }
+                    val track = audioTrackRow(info, shown, options) { picker = MediaPicker.AUDIO_TRACK }
+                    val subtitles = subtitlesRow(info, shown, options, preferences) { picker = MediaPicker.SUBTITLES }
+                    MusicRowGroup(
+                        when (shownKind) {
+                            DownloadKind.VIDEO -> listOf(quality, track, subtitles)
+                            DownloadKind.AUDIO -> listOfNotNull(
+                                saveAsRow(savesAsSong) { saves -> viewModel.onSheetChoicesChange(forEveryDownload = true) { it.copy(savesAsSong = saves) } },
+                                songRow(info, song) { picker = MediaPicker.SONG }.takeIf { savesAsSong },
+                                track,
+                                quality,
+                            )
+                            DownloadKind.SUBTITLES -> listOf(subtitles)
+                            // Never the sheet's own choice: a download is a file only where its link serves one - see kind.
+                            DownloadKind.FILE -> emptyList()
+                        },
+                    )
+                }
+                MusicRowGroup(listOf(moreOptionsRow(enabled = info != null) { picker = MediaPicker.MORE_OPTIONS }), modifier = Modifier.padding(top = 12.dp))
+            }
+            SheetReveal(visible = info != null && kind.isMedia) {
+                LibraryCheckLine(check, kind, setOfNotNull(viewModel.openLink), Modifier.padding(top = 16.dp))
+            }
+            // Pressed while the link is read, it downloads all the same: the download reads what is left - see onDownload.
+            DownloadButton(
+                label = if (size != null) stringResource(R.string.download_download_size, size) else stringResource(R.string.download_download),
+                // Captions alone, once read, only where there are some picked to save.
+                enabled = info == null || kind != DownloadKind.SUBTITLES || info.pickedCaptions(choices, options, preferences, info.transcribersFor(preferences).isNotEmpty()).isNotEmpty(),
+                viewModel = viewModel,
+                onDownload = { viewModel.onDownload() },
+                modifier = Modifier.padding(top = if (kind == DownloadKind.FILE) 0.dp else 20.dp),
+            )
+        }
+    }
+    if (info == null) return
+    if (isNaming) RenameFileDialog(name = options.fileName ?: info.title.toFileName(), onRename = viewModel::onFileNameChange, onDismiss = { isNaming = false })
+    val close = { picker = null }
+    when (picker) {
+        MediaPicker.SONG -> song?.let {
+            SongSheet(it, onSaveAsFile = { viewModel.onSheetChoicesChange { choices -> choices.copy(savesAsSong = false) } }, onDismiss = close)
+        }
+        MediaPicker.QUALITY -> QualitySheet(viewModel, info, onDismiss = close)
+        MediaPicker.AUDIO_TRACK -> AudioTrackSheet(viewModel, info, onDismiss = close)
+        MediaPicker.SUBTITLES -> SubtitlesSheet(viewModel, info, onDismiss = close)
+        MediaPicker.MORE_OPTIONS -> DownloadOptionsSheet(viewModel, info, onDismiss = close)
+        null -> Unit
+    }
+}
+
+/**
+ * Is it the right thing? Its picture with its length - unless [showsThumbnail] is off, the preview disabled - its title, and who
+ * published it where: a skeleton until they are known. The title - the [fileName] it is saved as, once given one - is tapped to
+ * name the file, [onName], where it can be.
+ */
+@Composable
+private fun MediaHeader(info: MediaInfo?, preview: LinkPreview?, showsThumbnail: Boolean, fileName: String? = null, onName: (() -> Unit)? = null) {
+    val thumbnail = info?.thumbnailUrl ?: preview?.thumbnailUrl
+    val title = fileName ?: info?.title ?: preview?.title
+    val details = if (info?.isPlaylist == true) {
+        val count = info.entries.orEmpty().size
+        listOfNotNull(stringResource(R.string.download_playlist), pluralStringResource(R.plurals.download_videos, count, count), info.uploader)
+    } else if (info != null) {
+        listOfNotNull(info.uploader, info.site?.removeSuffix("Tab"))
+    } else {
+        listOfNotNull(preview?.uploader, stringResource(R.string.download_reading_link))
+    }
+    Row(modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Not drawn at all - nor loaded - where the preview is turned off: the title takes its place.
+        if (showsThumbnail) Box(modifier = Modifier.size(width = 128.dp, height = HeaderHeight).clip(RoundedCornerShape(12.dp))) {
+            if (thumbnail == null) {
+                Box(modifier = Modifier.matchParentSize().background(MaterialTheme.colorScheme.surfaceContainerHighest).shimmer())
+            } else {
+                AsyncImage(model = thumbnail, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize())
+            }
+            info?.durationSeconds?.let { seconds ->
+                Text(
+                    text = formatPlaybackTime(seconds * 1_000),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black.copy(alpha = 0.72f))
+                        .padding(horizontal = 6.dp, vertical = 1.dp),
+                )
+            }
+        }
+        // At least as tall as the picture whatever it says - a title of one line or two, or the skeleton before it - so nothing below moves
+        // as it comes; what it says centred in that height.
+        Column(
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(start = if (showsThumbnail) 16.dp else 0.dp).weight(1f).heightIn(min = HeaderHeight),
+        ) {
+            if (title == null) {
+                Bone(widthFraction = 0.92f)
+                Bone(widthFraction = 0.6f, modifier = Modifier.padding(top = 10.dp))
+            } else if (onName == null) {
+                Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            } else {
+                Row(
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClickLabel = stringResource(R.string.download_name_file), onClick = onName),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    Icon(MusicIcons.Edit, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 6.dp).size(16.dp))
+                }
+            }
+            Text(
+                text = details.joinToString(InfoSeparator),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
+}
+
+/** The header's height: its picture's, which two lines of title and the line under them fit in. */
+private val HeaderHeight = 72.dp
+
+/** A line of text not read yet. */
+@Composable
+private fun Bone(widthFraction: Float, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth(widthFraction)
+            .height(14.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+            .shimmer(),
+    )
+}
+
+/** Audio, Video or Subtitles, joined - the one picked filled. Picking downloads nothing: Download does. */
+@Composable
+private fun KindChoice(kind: DownloadKind, onSelect: (DownloadKind) -> Unit) {
+    MusicConnectedChoice(
+        options = listOf(DownloadKind.AUDIO, DownloadKind.VIDEO, DownloadKind.SUBTITLES),
+        selected = kind,
+        onSelect = onSelect,
+        label = { stringResource(it.labelRes) },
+        icon = { it.icon },
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/**
+ * How a sound is saved: as the song it is, or as an audio file named as the video is - kept for every download. [isMany] for
+ * a playlist's: songs, or audio files.
+ */
+private fun saveAsRow(savesAsSong: Boolean, isMany: Boolean = false, onChange: (Boolean) -> Unit): MusicGroupRow = { shapes ->
+    MusicValueRow(
+        label = stringResource(R.string.download_save_as),
+        shapes = shapes,
+        icon = MusicIcons.LibraryMusic,
+        trailing = {
+            MusicConnectedChoice(
+                options = listOf(true, false),
+                selected = savesAsSong,
+                onSelect = onChange,
+                label = {
+                    stringResource(
+                        when {
+                            it && isMany -> R.string.download_save_as_songs
+                            it -> R.string.download_save_as_song
+                            isMany -> R.string.download_save_as_files
+                            else -> R.string.download_save_as_file
+                        },
+                    )
+                },
+                isCompact = true,
+            )
+        },
+        onClick = { onChange(!savesAsSong) },
+    )
+}
+
+/**
+ * The song the sound is saved as - its cover, its name, who sang it, and what of it the file will hold: "cover, tags, synced
+ * lyrics" - or where finding it stands.
+ */
+private fun songRow(info: MediaInfo?, song: VideoSong?, onClick: () -> Unit): MusicGroupRow = { shapes ->
+    val chosen = song?.takeIf { it.isChosen }
+    val holds = chosen?.let {
+        listOfNotNull(
+            stringResource(R.string.download_song_holds_cover),
+            stringResource(R.string.download_song_holds_tags),
+            when {
+                it.lyrics?.lyrics?.timing?.let { timing -> timing != LyricsTiming.NONE } == true -> stringResource(R.string.download_song_holds_synced_lyrics)
+                it.lyrics != null || it.lyricsPick is LyricsPick.Written -> stringResource(R.string.download_song_holds_lyrics)
+                else -> null
+            },
+        ).joinToString(", ")
+    }
+    MusicValueRow(
+        label = when {
+            chosen != null -> chosen.tags[TagField.TITLE]
+            info == null || song?.isFinding != false -> stringResource(R.string.download_finding_song)
+            else -> stringResource(R.string.download_song_not_found)
+        },
+        shapes = shapes,
+        leading = { SongArt(chosen?.coverUri, size = 40) },
+        value = when {
+            chosen != null -> listOf(chosen.tags[TagField.ARTIST], holds.orEmpty()).filter { it.isNotBlank() }.joinToString(InfoSeparator)
+            info == null -> stringResource(R.string.download_finding_song_after)
+            song?.isFinding != false -> null
+            else -> stringResource(R.string.download_song_find_it)
+        },
+        enabled = info != null,
+        onClick = onClick,
+    )
+}
+
+/** The quality row: a video's picture, or a song's format, and what it comes to. */
+private fun qualityRow(info: MediaInfo?, choices: DownloadChoices, onClick: () -> Unit): @Composable (ListItemShapes) -> Unit = { shapes ->
+    MusicValueRow(
+        label = stringResource(R.string.download_row_quality),
+        shapes = shapes,
+        icon = if (choices.kind == DownloadKind.VIDEO) MusicIcons.HighQuality else MusicIcons.GraphicEq,
+        value = qualityValue(info, choices),
+        enabled = info != null,
+        onClick = onClick,
+    )
+}
+
+/** The audio track row: the sound kept - the one recorded unless another is picked - offered where the video has more than one. */
+private fun audioTrackRow(info: MediaInfo?, choices: DownloadChoices, options: DownloadOptions, onClick: () -> Unit): @Composable (ListItemShapes) -> Unit = { shapes ->
+    val track = info?.audioLanguageFor(choices.audioLanguage)?.let { language -> info.audioTracks.firstOrNull { it.language == language } }
+    // Further sounds counted on the row of a video's - see AudioTrackSheet.
+    val more = choices.kind.takeIf { it == DownloadKind.VIDEO }?.let { options.audioLanguages.size } ?: 0
+    MusicValueRow(
+        label = stringResource(R.string.download_audio_track),
+        shapes = shapes,
+        icon = MusicIcons.RecordVoiceOver,
+        value = listOfNotNull(
+            track?.let { listOf(languageName(it.language), stringResource(it.kind.labelRes)).joinToString(InfoSeparator) } ?: stringResource(R.string.download_track_original),
+            more.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.download_audio_more_count, it, it) },
+        ).joinToString(InfoSeparator),
+        enabled = track != null,
+        onClick = onClick,
+    )
+}
+
+/**
+ * The subtitles row: the captions picked, and whether in the video or beside it - the captions alone, just which - offered where
+ * the video has any, or its speech can be transcribed.
+ */
+private fun subtitlesRow(info: MediaInfo?, choices: DownloadChoices, options: DownloadOptions, preferences: DownloaderPreferences, onClick: () -> Unit): @Composable (ListItemShapes) -> Unit = { shapes ->
+    // Transcribed only where a service can - see transcribersFor.
+    val transcribes = info?.transcribersFor(preferences)?.isNotEmpty() == true
+    val picked = info?.pickedCaptions(choices, options, preferences, transcribes)
+    val pickedNames = picked.orEmpty().map { captionName(it) }.joinToString(", ")
+    MusicValueRow(
+        label = stringResource(R.string.download_subtitles),
+        shapes = shapes,
+        icon = MusicIcons.Subtitles,
+        value = when {
+            info == null -> null
+            !info.hasCaptions && !transcribes -> stringResource(R.string.download_subtitles_none)
+            picked.isNullOrEmpty() -> stringResource(R.string.download_subtitles_off)
+            choices.kind == DownloadKind.SUBTITLES -> pickedNames
+            else -> stringResource(
+                if (choices.subtitlesAsFile) R.string.download_subtitles_value_as_file else R.string.download_subtitles_value_in_video,
+                pickedNames,
+            )
+        },
+        enabled = info != null && (info.hasCaptions || transcribes),
+        onClick = onClick,
+    )
+}
+
+/** The row to everything the sheet does not show. */
+private fun moreOptionsRow(enabled: Boolean, onClick: () -> Unit): @Composable (ListItemShapes) -> Unit = { shapes ->
+    MusicValueRow(
+        label = stringResource(R.string.download_more_options),
+        shapes = shapes,
+        icon = MusicIcons.Tune,
+        value = stringResource(R.string.download_more_options_summary),
+        enabled = enabled,
+        onClick = onClick,
+    )
+}
+
+/** The trailing half of Download is as wide as a touch target. */
+private val DownloadMenuButtonWidth = 56.dp
+private val DownloadButtonHeight = 56.dp
+
+/**
+ * Download, saying what it downloads - Material 3 Expressive's split button: its arrow opens what changes when it starts -
+ * later, at a time picked, or on Wi-Fi alone.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun DownloadButton(label: String, enabled: Boolean, viewModel: DownloadViewModel, onDownload: () -> Unit, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val preferences by viewModel.preferences.collectAsStateWithLifecycle()
+    val startAt by viewModel.startAt.collectAsStateWithLifecycle()
+    var isMenuOpen by remember { mutableStateOf(false) }
+    var isPickingTime by remember { mutableStateOf(false) }
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val leadingWidth = maxWidth - DownloadMenuButtonWidth - SplitButtonDefaults.Spacing
+        SplitButtonLayout(
+            leadingButton = {
+                SplitButtonDefaults.LeadingButton(
+                    onClick = onDownload,
+                    enabled = enabled,
+                    modifier = Modifier.width(leadingWidth).height(DownloadButtonHeight),
+                ) {
+                    Icon(MusicIcons.Download, contentDescription = null, modifier = Modifier.size(SplitButtonDefaults.LeadingIconSize))
+                    Text(label, modifier = Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                }
+            },
+            trailingButton = {
+                Box {
+                    SplitButtonDefaults.TrailingButton(
+                        checked = isMenuOpen,
+                        onCheckedChange = { isMenuOpen = it },
+                        enabled = enabled,
+                        modifier = Modifier.width(DownloadMenuButtonWidth).height(DownloadButtonHeight),
+                    ) {
+                        Icon(MusicIcons.KeyboardArrowDown, contentDescription = stringResource(R.string.download_later_or_wifi))
+                    }
+                    DropdownMenu(expanded = isMenuOpen, onDismissRequest = { isMenuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.download_option_start_at)) },
+                            trailingIcon = startAt?.let { { Text(DateFormat.getTimeFormat(context).format(it)) } },
+                            onClick = {
+                                isMenuOpen = false
+                                isPickingTime = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.downloads_settings_wifi_only_title)) },
+                            trailingIcon = if (preferences.wifiOnly) ({ Icon(MusicIcons.Check, contentDescription = null) }) else null,
+                            onClick = { viewModel.onWifiOnlyChange(!preferences.wifiOnly) },
+                        )
+                    }
+                }
+            },
+        )
+    }
+    if (isPickingTime) StartAtDialog(onConfirm = viewModel::onStartAtChange, onDismiss = { isPickingTime = false })
+}
+
+/**
+ * A playlist's videos, every one picked to begin with - picked and unpicked by a tap - then downloaded as one kind, at one
+ * quality: each picked its own download, read as it starts, several at once.
+ */
+@Composable
+private fun PlaylistSheet(info: MediaInfo, viewModel: DownloadViewModel) {
+    val choices by viewModel.sheetChoices.collectAsStateWithLifecycle()
+    val entries = info.entries.orEmpty()
+    val picks = remember(entries) { SelectionState().apply { selectAll(entries.map(PlaylistEntry::id)) } }
+    val isAllPicked = picks.count == entries.size
+    val check by viewModel.libraryCheck.collectAsStateWithLifecycle()
+    var picker by remember { mutableStateOf<MediaPicker?>(null) }
+    MusicColumnBottomSheet(onDismissRequest = viewModel::onDismissLink, header = { MediaHeader(info, preview = null, showsThumbnail = !viewModel.preferences.collectAsStateWithLifecycle().value.hidesPreview) }) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+            KindChoice(choices.kind) { kind -> viewModel.onSheetChoicesChange { it.copy(kind = kind) } }
+            MusicRowGroup(
+                listOfNotNull(
+                    // Each of its songs is found by its own title and artist as it downloads, and tagged only where surely found.
+                    saveAsRow(choices.savesAsSong, isMany = true) { savesAsSong -> viewModel.onSheetChoicesChange(forEveryDownload = true) { it.copy(savesAsSong = savesAsSong) } }
+                        .takeIf { choices.kind == DownloadKind.AUDIO },
+                    qualityRow(info, choices) { picker = MediaPicker.QUALITY }.takeIf { choices.kind.isMedia },
+                    moreOptionsRow(enabled = true) { picker = MediaPicker.MORE_OPTIONS },
+                ),
+                modifier = Modifier.padding(top = 16.dp),
+            )
+        }
+        Row(modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = stringResource(R.string.download_picked_of, picks.count, entries.size),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = { if (isAllPicked) picks.clear() else picks.selectAll(entries.map(PlaylistEntry::id)) }, shapes = buttonPressShapes()) {
+                Text(stringResource(if (isAllPicked) R.string.download_pick_none else R.string.download_pick_all))
+            }
+        }
+        LazyColumn(modifier = Modifier.weight(1f, fill = false)) {
+            items(entries, key = PlaylistEntry::id) { entry ->
+                MusicListRow(
+                    title = entry.title,
+                    subtitle = entry.durationSeconds?.let { formatPlaybackTime(it * 1000) }.orEmpty(),
+                    selection = picks,
+                    selectionKey = entry.id,
+                    // Picking is all this list is for: a tap picks, as it does while selecting.
+                    onClick = { picks.toggle(entry.id) },
+                    onOpenOptions = null,
+                    containerColor = Color.Transparent,
+                    cover = { isSelected -> MusicCoverArt(coverArtUri = entry.thumbnailUrl, contentDescription = null, isSelected = isSelected) },
+                )
+            }
+        }
+        if (choices.kind.isMedia) {
+            LibraryCheckLine(
+                check,
+                choices.kind,
+                entries.filter { picks.isSelected(it.id) }.map(PlaylistEntry::url).toSet(),
+                Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp),
+            )
+        }
+        DownloadButton(
+            label = stringResource(R.string.download_download_picked, picks.count),
+            enabled = picks.isActive,
+            viewModel = viewModel,
+            onDownload = { viewModel.onDownload(entries = entries.filter { picks.isSelected(it.id) }) },
+            modifier = Modifier.padding(16.dp),
+        )
+    }
+    val close = { picker = null }
+    when (picker) {
+        MediaPicker.QUALITY -> QualitySheet(viewModel, info, onDismiss = close)
+        MediaPicker.MORE_OPTIONS -> DownloadOptionsSheet(viewModel, info, onDismiss = close)
+        else -> Unit
+    }
+}
+
+/**
+ * A link that could not be read - why, in plain words where the reason is one the user can act on (no connection, the
+ * video blocked, a sign-in wanted), with its one fix - then yt-dlp's own words, folded away, and the way to give another.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun UnreadableSheet(sheet: LinkSheet.Unreadable, viewModel: DownloadViewModel) {
+    val context = LocalContext.current
+    val navigator = LocalNavigator.current
+    val cancelLabel = stringResource(R.string.download_cancel)
+    val pasteLabel = stringResource(R.string.download_paste_another)
+    val presentation = sheet.failure.presentation
+    val isKnown = sheet.failure != DownloadFailure.FAILED
+    MusicBottomSheet(onDismissRequest = viewModel::onDismissLink, header = {}) {
+        SheetMessage(
+            icon = if (isKnown) presentation.icon else MusicIcons.LinkOff,
+            title = stringResource(if (isKnown) presentation.titleRes else R.string.download_unreadable_title),
+            message = stringResource(if (isKnown) presentation.messageRes else R.string.download_unreadable_message),
+        )
+        FixButton(presentation.fix.labelRes, presentation.fix.icon) {
+            when (presentation.fix) {
+                FailureFix.TRY_AGAIN, FailureFix.TRY_BEST_FORMAT, FailureFix.DOWNLOAD_ANYWAY -> viewModel.open(sheet.url)
+                FailureFix.OPEN_LINK -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(sheet.url))) }
+                FailureFix.SIGN_IN -> {
+                    navigator.go(BrowserScreen(page = sheet.url))
+                    dismiss()
+                }
+                FailureFix.FREE_UP_SPACE -> runCatching { context.startActivity(Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)) }
+                FailureFix.GET_DOWNLOADER -> viewModel.onGetDownloader()
+            }
+        }
+        sheet.detail?.let { ErrorDetails(it) }
+        MusicActionButtonGroup(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp)) {
+            actionButton(label = cancelLabel, onClick = { dismiss() })
+            // The clipboard holds the link that failed: the link field, under the sheet, takes another.
+            actionButton(label = pasteLabel, onClick = viewModel::onDismissLink)
+        }
+    }
+}
+
+/**
+ * The downloader, offered for the link that needs it: why, its size, and its progress as it comes - the download it was got
+ * for going on by itself once it is here. A YouTube video can be saved as a song instead, which needs nothing.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun DownloaderSheet(sheet: LinkSheet.NeedsDownloader, viewModel: DownloadViewModel) {
+    val state by viewModel.downloaderState.collectAsStateWithLifecycle()
+    val host = hostOf(sheet.url)
+    val savesAsAudio = sheet.savesAsAudio
+    val notNowLabel = stringResource(R.string.download_not_now)
+    val audioLabel = stringResource(R.string.download_save_as_audio)
+    val getLabel = stringResource(R.string.download_get_downloader)
+    MusicBottomSheet(
+        onDismissRequest = viewModel::onDismissLink,
+        header = {
+            Row(modifier = Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(MusicIcons.Link, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(host, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp))
+            }
+        },
+    ) {
+        SheetMessage(
+            icon = MusicIcons.Extension,
+            title = stringResource(if (savesAsAudio) R.string.download_video_needs_downloader else R.string.download_get_downloader_title),
+            message = if (savesAsAudio) stringResource(R.string.download_video_needs_downloader_message) else stringResource(R.string.download_get_downloader_message, host),
+        )
+        when (val current = state) {
+            is RuntimeState.Downloading -> Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
+                val progress by animateProgressAsState(current.progress)
+                Text(
+                    text = stringResource(R.string.download_getting_downloader, (progress * 100).toInt()),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LinearWavyProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
+            }
+            RuntimeState.Failed -> Text(
+                text = stringResource(R.string.download_downloader_failed),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+            )
+            else -> Unit
+        }
+        MusicActionButtonGroup(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp)) {
+            if (savesAsAudio) actionButton(label = audioLabel, onClick = { viewModel.onDownload(DownloadKind.AUDIO) })
+            else actionButton(label = notNowLabel, onClick = { dismiss() })
+            actionButton(label = getLabel, enabled = state !is RuntimeState.Downloading, onClick = viewModel::onGetDownloader)
+        }
+    }
+}
+
+/** A sheet's message: its [icon] in a circle, a [title] and what it means. */
+@Composable
+internal fun SheetMessage(icon: ImageVector, title: String, message: String) {
+    Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
+        Box(
+            modifier = Modifier.size(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(32.dp))
+        }
+        Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 16.dp))
+        Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+    }
+}

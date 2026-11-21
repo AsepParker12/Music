@@ -1,0 +1,395 @@
+package com.music.app.feature.download
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Environment
+import android.provider.Settings
+import android.text.format.DateFormat
+import android.text.format.DateUtils
+import android.text.format.Formatter
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import coil3.compose.AsyncImage
+import com.music.app.core.designsystem.component.InfoSeparator
+import com.music.app.core.designsystem.component.MusicCoverArt
+import com.music.app.core.designsystem.component.MusicIconButton
+import com.music.app.core.designsystem.component.MusicRowGroup
+import com.music.app.core.designsystem.component.MusicValueRow
+import com.music.app.core.designsystem.component.copyToClipboard
+import com.music.app.core.designsystem.component.sheet.SheetReveal
+import com.music.app.core.designsystem.component.sheet.MusicBottomSheet
+import com.music.app.core.designsystem.component.sheet.MusicOptionRow
+import com.music.app.core.designsystem.component.sheet.MusicOptionsSheetHeader
+import com.music.app.core.designsystem.icon.MusicIcons
+import com.music.app.core.designsystem.theme.buttonPressShapes
+import com.music.app.core.model.Download
+import com.music.app.core.model.DownloadFailure
+import com.music.app.core.model.DownloadKind
+import com.music.app.core.model.DownloadStatus
+import com.music.app.core.designsystem.component.sheet.MusicBottomSheetScope
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.feature.download.tools.DownloadLogScreen
+import com.music.app.feature.download.browser.BrowserScreen
+import com.music.app.feature.tageditor.RenameFileDialog
+import com.music.app.feature.tageditor.autotag.AutoTagScreen
+import com.music.app.feature.tageditor.rememberFileAccessRequest
+import java.io.File
+
+/**
+ * One download, opened: what it is, and what can be done with it as it stands - how far, paused or stopped while it waits or
+ * runs (see [ActiveDownloadContent]); played,
+ * tagged, downloaded again or shared once saved; and, where it failed, why in plain words with the one fix that helps, the
+ * downloader's own words a tap further.
+ */
+@Composable
+internal fun DownloadSheet(download: Download, viewModel: DownloadViewModel, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val navigator = LocalNavigator.current
+    val copiedLabel = stringResource(R.string.download_link_copied)
+
+    if (download.status == DownloadStatus.DONE) return SavedSheet(download, viewModel, onDismiss)
+    MusicBottomSheet(
+        onDismissRequest = onDismiss,
+        header = {
+            MusicOptionsSheetHeader(
+                cover = { MusicCoverArt(coverArtUri = download.thumbnailUrl, contentDescription = null) },
+                type = stringResource(download.choices.kind.labelRes),
+                name = download.title ?: hostOf(download.url),
+                info = listOfNotNull(download.uploader, download.site).joinToString(InfoSeparator),
+            )
+        },
+    ) {
+        when (download.status) {
+            DownloadStatus.QUEUED, DownloadStatus.RUNNING, DownloadStatus.PAUSED -> ActiveDownloadContent(download, viewModel)
+
+            DownloadStatus.DONE -> Unit
+
+            DownloadStatus.FAILED, DownloadStatus.CANCELED -> {
+                Unsaved(download, viewModel, onFixed = { dismiss() }, onSignIn = {
+                    navigator.go(BrowserScreen(page = download.url))
+                    dismiss()
+                })
+                ShowLogRow(download.id)
+                MusicOptionRow(label = stringResource(R.string.download_copy_link), icon = MusicIcons.ContentCopy, onClick = {
+                    context.copyToClipboard(download.url, copiedLabel)
+                    dismiss()
+                })
+            }
+        }
+    }
+}
+
+/**
+ * A saved download: its picture, title and who published it where - the title tapped to rename what it saved, still there; the link it came from - opened or copied - and the file it saved - its name, what, how big, where and when;
+ * then Play, Download again and Share. Deleting is the list's, from a selection.
+ */
+@Composable
+private fun SavedSheet(download: Download, viewModel: DownloadViewModel, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val copiedLabel = stringResource(R.string.download_link_copied)
+    val path = download.savedPaths.firstOrNull()
+    val finishedAt = download.finishedAt ?: download.createdAt
+    val savedOn = if (DateUtils.isToday(finishedAt)) {
+        stringResource(R.string.download_saved_today_at, DateFormat.getTimeFormat(context).format(finishedAt))
+    } else {
+        DateUtils.formatDateTime(context, finishedAt, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME)
+    }
+    val folder = path?.let { File(it).parent?.removePrefix(Environment.getExternalStorageDirectory().path)?.trimStart('/') }
+    // Renamed whatever it saved, while it is still there - once Android lets Music: see DownloadViewModel.onRenameSaved.
+    val missingFiles by viewModel.missingFiles.collectAsStateWithLifecycle()
+    val canRename = path != null && download.id !in missingFiles
+    var isRenaming by remember { mutableStateOf(false) }
+    var pendingName by remember { mutableStateOf<String?>(null) }
+    val requestAccess = rememberFileAccessRequest(onGranted = {
+        pendingName?.let { viewModel.onRenameSaved(download, it) }
+        pendingName = null
+    })
+    MusicBottomSheet(
+        onDismissRequest = onDismiss,
+        header = {
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                AsyncImage(
+                    model = download.thumbnailUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                )
+                Row(
+                    modifier = Modifier
+                        .padding(start = 8.dp, end = 8.dp, top = 16.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .then(if (canRename) Modifier.clickable(onClickLabel = stringResource(R.string.download_name_file)) { isRenaming = true } else Modifier),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        download.title ?: hostOf(download.url),
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (canRename) Icon(MusicIcons.Edit, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 6.dp).size(16.dp))
+                }
+                Text(
+                    listOfNotNull(download.uploader, download.site).joinToString(InfoSeparator),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, top = 2.dp),
+                )
+            }
+        },
+    ) {
+        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 16.dp)) {
+            MusicRowGroup(
+                listOf(
+                    { shapes ->
+                        MusicValueRow(
+                            label = download.url.substringAfter("://").removePrefix("www."),
+                            shapes = shapes,
+                            icon = MusicIcons.Link,
+                            value = stringResource(R.string.download_open_in_browser),
+                            trailing = {
+                                MusicIconButton(onClick = { context.copyToClipboard(download.url, copiedLabel) }, icon = MusicIcons.ContentCopy, contentDescription = stringResource(R.string.download_copy_link))
+                            },
+                            onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(download.url))) } },
+                        )
+                    },
+                    { shapes ->
+                        val facts = listOfNotNull(
+                            stringResource(download.choices.kind.labelRes),
+                            path?.let { File(it).extension.uppercase() }?.takeIf { it.isNotEmpty() },
+                            download.sizeBytes.takeIf { it > 0 }?.let { Formatter.formatShortFileSize(context, it) },
+                        ).joinToString(InfoSeparator)
+                        MusicValueRow(
+                            // Named as it is on the device - as renamed - its facts under it.
+                            label = path?.let { File(it).name } ?: facts,
+                            shapes = shapes,
+                            icon = when (download.choices.kind) {
+                                DownloadKind.AUDIO -> MusicIcons.AudioFile
+                                DownloadKind.VIDEO -> MusicIcons.VideoFile
+                                DownloadKind.SUBTITLES -> MusicIcons.Description
+                                DownloadKind.FILE -> MusicIcons.File
+                            },
+                            value = listOfNotNull(facts.takeIf { path != null }, folder, savedOn).joinToString(InfoSeparator),
+                            onClick = {
+                                viewModel.onPlay(download)
+                                dismiss()
+                            },
+                        )
+                    },
+                ),
+            )
+            Button(
+                onClick = {
+                    viewModel.onPlay(download)
+                    dismiss()
+                },
+                shapes = buttonPressShapes(),
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp).heightIn(min = 56.dp),
+            ) {
+                Icon(download.choices.kind.openIcon, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                Text(stringResource(download.choices.kind.openLabelRes), modifier = Modifier.padding(start = ButtonDefaults.IconSpacing), style = MaterialTheme.typography.titleMedium)
+            }
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(
+                    onClick = {
+                        viewModel.onDownloadAgain(listOf(download))
+                        dismiss()
+                    },
+                    shapes = buttonPressShapes(),
+                    modifier = Modifier.weight(1f).heightIn(min = 56.dp),
+                ) {
+                    Icon(MusicIcons.Download, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                    Text(stringResource(R.string.download_again), modifier = Modifier.padding(start = ButtonDefaults.IconSpacing), maxLines = 1)
+                }
+                FilledTonalButton(
+                    onClick = {
+                        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, download.url), null))
+                        dismiss()
+                    },
+                    shapes = buttonPressShapes(),
+                    modifier = Modifier.weight(1f).heightIn(min = 56.dp),
+                ) {
+                    Icon(MusicIcons.Share, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                    Text(stringResource(R.string.download_share), modifier = Modifier.padding(start = ButtonDefaults.IconSpacing), maxLines = 1)
+                }
+            }
+        }
+        if (download.choices.kind == DownloadKind.SUBTITLES) download.savedPaths.forEach { CopySubtitlesRow(it) }
+        ShowLogRow(download.id)
+    }
+    if (isRenaming && path != null) {
+        RenameFileDialog(name = File(path).nameWithoutExtension, onRename = { name ->
+            pendingName = name
+            requestAccess()
+        }, onDismiss = { isRenaming = false })
+    }
+}
+
+/** A download not saved: why - cancelled, or the reason it failed - and the one fix, then the downloader's words, folded away. */
+@Composable
+private fun Unsaved(download: Download, viewModel: DownloadViewModel, onFixed: () -> Unit, onSignIn: () -> Unit) {
+    val context = LocalContext.current
+    if (download.status == DownloadStatus.CANCELED) {
+        SheetMessage(MusicIcons.DoNotDisturbOn, stringResource(R.string.download_status_canceled), stringResource(R.string.download_canceled_message))
+        FixButton(R.string.download_again, MusicIcons.Download) {
+            viewModel.onRetry(download)
+            onFixed()
+        }
+        return
+    }
+    val presentation = (download.failure ?: DownloadFailure.FAILED).presentation
+    SheetMessage(presentation.icon, stringResource(presentation.titleRes), stringResource(presentation.messageRes))
+    FixButton(presentation.fix.labelRes, presentation.fix.icon) {
+        if (presentation.fix == FailureFix.SIGN_IN) return@FixButton onSignIn()
+        applyFix(context, viewModel, download, onSignIn)
+        onFixed()
+    }
+    download.error?.let { ErrorDetails(it) }
+}
+
+/** Does what fixes [download], failed - its row's button and its sheet's alike - [onSignIn] for one that needs the user signed in. */
+internal fun applyFix(context: Context, viewModel: DownloadViewModel, download: Download, onSignIn: () -> Unit) {
+    when ((download.failure ?: DownloadFailure.FAILED).presentation.fix) {
+        FailureFix.TRY_AGAIN -> viewModel.onRetry(download)
+        FailureFix.TRY_BEST_FORMAT -> viewModel.onRetryAtBestFormat(download)
+        FailureFix.OPEN_LINK -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(download.url))) }
+        FailureFix.SIGN_IN -> onSignIn()
+        FailureFix.FREE_UP_SPACE -> runCatching { context.startActivity(Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)) }
+        // It downloads by itself once the downloader is here - see DownloadQueue.
+        FailureFix.GET_DOWNLOADER -> viewModel.onGetDownloader()
+        FailureFix.DOWNLOAD_ANYWAY -> viewModel.onDownloadAnyway(listOf(download.id))
+    }
+}
+
+/** Copies the text of the subtitles file at [path] - one of a download's, named by its language: `Title [id].en.srt`. */
+@Composable
+private fun CopySubtitlesRow(path: String) {
+    val context = LocalContext.current
+    val copiedLabel = stringResource(R.string.download_link_copied)
+    MusicOptionRow(
+        label = stringResource(R.string.download_copy_subtitles),
+        icon = MusicIcons.ContentCopy,
+        detail = languageName(File(path).nameWithoutExtension.substringAfterLast('.').removeSuffix("-music")),
+        onClick = { runCatching { File(path).readText() }.onSuccess { context.copyToClipboard(it, copiedLabel) } },
+    )
+}
+
+/** Opens all the download said as it ran - its log, kept with it in the history - however it ended. */
+@Composable
+internal fun MusicBottomSheetScope.ShowLogRow(downloadId: Long) {
+    val navigator = LocalNavigator.current
+    MusicOptionRow(
+        label = stringResource(R.string.download_log_show),
+        icon = MusicIcons.Terminal,
+        onClick = {
+            navigator.go(DownloadLogScreen(downloadId))
+            dismiss()
+        },
+        trailingContent = { Icon(MusicIcons.KeyboardArrowRight, contentDescription = null) },
+    )
+}
+
+/** What went wrong in the downloader's own words - folded away under its row, to be read, selected or copied. */
+@Composable
+internal fun ErrorDetails(error: String) {
+    val context = LocalContext.current
+    val copiedLabel = stringResource(R.string.download_error_copied)
+    var showsDetails by remember { mutableStateOf(false) }
+    MusicOptionRow(
+        label = stringResource(R.string.download_error_details),
+        icon = MusicIcons.Code,
+        onClick = { showsDetails = !showsDetails },
+        trailingContent = { Icon(if (showsDetails) MusicIcons.ExpandLess else MusicIcons.ExpandMore, contentDescription = null) },
+    )
+    SheetReveal(visible = showsDetails) {
+        Column {
+            SelectionContainer(modifier = Modifier.padding(horizontal = 24.dp)) {
+                Text(error, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            MusicOptionRow(label = stringResource(R.string.download_copy_error), icon = MusicIcons.ContentCopy, onClick = { context.copyToClipboard(error, copiedLabel) })
+        }
+    }
+}
+
+/** A sheet's one fix for what went wrong - filled, full width, the obvious next tap. */
+@Composable
+internal fun FixButton(labelRes: Int, icon: ImageVector, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        shapes = buttonPressShapes(),
+        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 8.dp).fillMaxWidth().heightIn(min = 56.dp),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+        Text(stringResource(labelRes), modifier = Modifier.padding(start = 8.dp), style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+/**
+ * What else the selection can do - beyond Select all and Delete, which the bar holds itself - each offered only where it does
+ * something to what is selected: Pause what runs or waits, Resume what is paused, Cancel what is not over, Download again
+ * what is over.
+ */
+@Composable
+internal fun SelectionOptionsSheet(
+    selected: List<Download>,
+    viewModel: DownloadViewModel,
+    onShareLinks: () -> Unit,
+    onDone: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val navigator = LocalNavigator.current
+    val songIds = selected.filter { it.status == DownloadStatus.DONE && it.choices.kind == DownloadKind.AUDIO }
+        .flatMap(viewModel::tracksOf).filterNot { it.isVideo }.map { it.id }
+    val toPause = selected.filter { it.status == DownloadStatus.QUEUED || it.status == DownloadStatus.RUNNING }.map(Download::id)
+    val toResume = selected.filter { it.status == DownloadStatus.PAUSED }.map(Download::id)
+    val toCancel = toPause + toResume
+    val toRepeat = selected.filter { it.status.isFinished }
+    MusicBottomSheet(title = LocalContext.current.resources.getQuantityString(R.plurals.download_selected, selected.size, selected.size), onDismissRequest = onDismiss) {
+        @Composable
+        fun Option(labelRes: Int, icon: ImageVector, action: () -> Unit) = MusicOptionRow(label = stringResource(labelRes), icon = icon, onClick = {
+            action()
+            onDone()
+            dismiss()
+        })
+        if (toResume.isNotEmpty()) Option(R.string.download_resume, MusicIcons.Play) { viewModel.onResume(toResume) }
+        if (toPause.isNotEmpty()) Option(R.string.download_pause, MusicIcons.Pause) { viewModel.onPause(toPause) }
+        if (toCancel.isNotEmpty()) Option(R.string.download_cancel, MusicIcons.Close) { viewModel.onCancel(toCancel) }
+        if (toRepeat.isNotEmpty()) Option(R.string.download_again, MusicIcons.Download) { viewModel.onDownloadAgain(toRepeat) }
+        Option(R.string.download_share_links, MusicIcons.Share, onShareLinks)
+        if (songIds.isNotEmpty()) Option(R.string.download_auto_tag, MusicIcons.LibraryMusic) { navigator.go(AutoTagScreen(songIds)) }
+    }
+}

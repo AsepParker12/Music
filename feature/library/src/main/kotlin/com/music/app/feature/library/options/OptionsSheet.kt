@@ -1,0 +1,139 @@
+package com.music.app.feature.library.options
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.common.cover.rankedCoverArtUris
+import com.music.app.core.designsystem.component.CoverArtDefaults
+import com.music.app.core.designsystem.component.FavoriteToggle
+import com.music.app.core.designsystem.component.MusicAlbumCover
+import com.music.app.core.designsystem.component.MusicArtistCover
+import com.music.app.core.designsystem.component.MusicCoverArt
+import com.music.app.core.designsystem.component.MusicFolderCover
+import com.music.app.core.designsystem.component.MusicGenreCover
+import com.music.app.core.designsystem.component.MusicPlaylistCover
+import com.music.app.core.designsystem.component.MusicSelectionCover
+import com.music.app.core.designsystem.component.sheet.MusicBottomSheet
+import com.music.app.core.designsystem.component.sheet.MusicOptionRow
+import com.music.app.core.designsystem.component.sheet.MusicOptionsSheetHeader
+import com.music.app.feature.library.favorite.favoriteItems
+
+/**
+ * The sheet every song, album, artist, genre, folder and playlist opens for its overflow button - Auxio's
+ * menu bottom sheet: the entity's cover over its type, name and a line of detail, with its heart at the end
+ * wherever it can be favorited - see [favoriteItems] - then [target]'s actions in order, each disabled
+ * exactly where [disabledActions] says. The heart flips in place, leaving the sheet open.
+ *
+ * What each action does is [OptionsActions]'s, shared with a collection's own menu. An action that opens
+ * a dialog or a file picker takes the sheet out of sight without dismissing it, so the follow-up still
+ * has somewhere to report to; the sheet is dismissed once that ends. Any other action slides it away.
+ *
+ * [hiddenActions] are left out, offered elsewhere already - a selection's, on its bar. [onCollectionDeleted] hears
+ * [target] deleted - how the screen showing it leaves.
+ *
+ * [onActionDone] hears of an action once it has been done - at once for most, and for one with a follow-up once
+ * that is confirmed - how a selection's sheet ends the selection, as Auxio's does for every one of its actions,
+ * while a follow-up dismissed leaves every row picked.
+ */
+@Composable
+fun OptionsSheet(
+    target: OptionsTarget,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    onActionDone: () -> Unit = {},
+    hiddenActions: Set<OptionsAction> = emptySet(),
+    onCollectionDeleted: () -> Unit = {},
+) {
+    val actions = rememberOptionsActions()
+    val disabledActions = target.disabledActions()
+    val favorites by actions.viewModel.favorites.collectAsStateWithLifecycle()
+    val offersAddToPrivate by actions.viewModel.offersAddToPrivate.collectAsStateWithLifecycle()
+    val uncountedParents by actions.viewModel.uncountedParents.collectAsStateWithLifecycle()
+    val favoriteItems = remember(target) { target.favoriteItems() }
+
+    if (!actions.isFollowingUp) {
+        MusicBottomSheet(
+            onDismissRequest = onDismissRequest,
+            modifier = modifier,
+            header = {
+                MusicOptionsSheetHeader(
+                    cover = { OptionsSheetCover(target) },
+                    type = target.typeLabel(),
+                    name = target.name(),
+                    info = target.infoLine(),
+                    onRename = { actions.rename(target) }.takeIf { target.isRenamable },
+                    favorite = favoriteItems?.let { items ->
+                        val isFavorite = favorites.containsAll(items)
+                        FavoriteToggle(isFavorite) {
+                            onActionDone()
+                            actions.viewModel.setFavorite(items, !isFavorite)
+                        }
+                    },
+                )
+            },
+        ) {
+            (target.actions(offersAddToPrivate, uncountedParents) - hiddenActions).forEach { action ->
+                MusicOptionRow(
+                    label = action.label,
+                    icon = action.icon,
+                    enabled = action !in disabledActions,
+                    onClick = {
+                        actions.perform(target, action)
+                        if (!actions.isFollowingUp) {
+                            onActionDone()
+                            dismiss()
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    OptionsFollowUps(actions = actions, onFinished = onDismissRequest, onActionDone = onActionDone, onCollectionDeleted = onCollectionDeleted)
+}
+
+@Composable
+private fun OptionsSheetCover(target: OptionsTarget) {
+    val size = CoverArtDefaults.OptionsHeaderSize
+    when (target) {
+        is OptionsTarget.ForTrack -> MusicCoverArt(
+            coverArtUri = target.track.coverArtUri,
+            contentDescription = null,
+            size = size,
+        )
+
+        is OptionsTarget.ForAlbum -> MusicAlbumCover(coverArtUri = target.album.coverArtUri, size = size)
+
+        is OptionsTarget.ForArtist -> MusicArtistCover(
+            coverArtUris = target.artist.coverArtUris,
+            seed = target.artist.id.hashCode(),
+            size = size,
+        )
+
+        is OptionsTarget.ForGenre -> MusicGenreCover(
+            coverArtUris = target.genre.coverArtUris,
+            seed = target.genre.id.hashCode(),
+            size = size,
+        )
+
+        is OptionsTarget.ForPlaylist -> MusicPlaylistCover(
+            coverArtUris = target.playlist.coverArtUris,
+            seed = target.playlist.id.hashCode(),
+            size = size,
+        )
+
+        is OptionsTarget.ForFolder -> MusicFolderCover(
+            coverArtUris = target.folder.coverArtUris,
+            seed = target.folder.path.hashCode(),
+            size = size,
+        )
+
+        is OptionsTarget.ForSelection -> MusicSelectionCover(
+            coverArtUris = remember(target.tracks) { rankedCoverArtUris(target.tracks.map { it.coverArtUri }) },
+            seed = remember(target.tracks) { target.tracks.hashCode() },
+            size = size,
+        )
+    }
+}

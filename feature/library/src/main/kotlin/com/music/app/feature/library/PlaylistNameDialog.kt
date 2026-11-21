@@ -1,0 +1,68 @@
+package com.music.app.feature.library
+
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
+import com.music.app.core.designsystem.R as DesignR
+import com.music.app.core.designsystem.component.actionButton
+import com.music.app.core.designsystem.component.dialog.MusicDialog
+import com.music.app.feature.library.R
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+
+/**
+ * Asks for a playlist's name, whether it is being created or renamed - and, with no [takenNames] to keep clear of, for any
+ * other name the options ask for: a file's.
+ *
+ * The two rules are the reference app's: a name cannot be blank, and cannot be one already in use.
+ * Both are checked as the user types and shown on the field rather than as a toast after the fact,
+ * so the confirm button simply stays unavailable until the name is one that will work - the
+ * database has the same unique rule, and this keeps the user from meeting it as a failure.
+ */
+/** Whether [name] is already one of [takenNames] - the rule every place a playlist is named keeps. */
+internal fun isPlaylistNameTaken(name: String, takenNames: List<String>): Boolean =
+    takenNames.any { it.equals(name.trim(), ignoreCase = true) }
+
+
+@Composable
+internal fun PlaylistNameDialog(
+    dialogTitle: String,
+    confirmLabel: String,
+    initialName: String,
+    takenNames: List<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    val name = rememberTextFieldState(initialName)
+    val trimmed = name.text.trim().toString()
+    val isTaken = isPlaylistNameTaken(trimmed, takenNames)
+    val error = if (isTaken) stringResource(R.string.playlist_name_taken) else null
+    // Read here rather than inside the buttons: they are built outside composition.
+    val cancelLabel = stringResource(DesignR.string.confirmation_dialog_cancel)
+
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = dialogTitle,
+        buttons = {
+            actionButton(label = cancelLabel, onClick = onDismiss)
+            actionButton(
+                label = confirmLabel,
+                onClick = { onConfirm(trimmed) },
+                enabled = trimmed.isNotEmpty() && !isTaken,
+            )
+        },
+    ) {
+        OutlinedTextField(
+            state = name,
+            lineLimits = TextFieldLineLimits.SingleLine,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+            onKeyboardAction = { if (trimmed.isNotEmpty() && !isTaken) onConfirm(trimmed) },
+            isError = error != null,
+            supportingText = error?.let { { Text(it) } },
+        )
+    }
+}

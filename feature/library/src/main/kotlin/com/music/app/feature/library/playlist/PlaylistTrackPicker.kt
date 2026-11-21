@@ -1,0 +1,160 @@
+package com.music.app.feature.library.playlist
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.data.itemsOrEmpty
+import com.music.app.core.designsystem.component.SelectionState
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.TopBarSearch
+import com.music.app.core.designsystem.component.topBarBackground
+import com.music.app.core.designsystem.component.dialog.MusicConfirmationDialog
+import com.music.app.core.designsystem.component.selectAllAction
+import com.music.app.core.designsystem.component.toast
+import com.music.app.core.model.Track
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.feature.library.R
+import com.music.app.feature.library.operation.AddToPrivateDialog
+import com.music.app.feature.library.options.OptionsAction
+import com.music.app.feature.library.options.label
+import com.music.app.feature.library.selection.SelectionKey
+import com.music.app.feature.library.selection.SelectionOptionsHost
+import com.music.app.feature.library.selection.toLibraryTopBarSelection
+import com.music.app.core.designsystem.icon.MusicIcons
+import java.io.Serializable
+
+/**
+ * The shape both of a playlist's pickers share: a bar naming what is being picked, with [tabs] beneath it - the
+ * two lifting as one once the list leaves its top, as the library's bar and tabs do - then [content]'s
+ * rows - ordinary library rows, which play or open with a tap, offer their options sheet, and start a
+ * selection with a long press, exactly as they do in the library.
+ *
+ * Once rows are selected the bar is the library's selection bar, with Add beside Select all. An open
+ * search keeps its field on screen instead, so the query can still be changed with rows picked, and
+ * Add and Select all stay reachable beside it. Select all works on [visibleKeys] - the rows on screen,
+ * narrowed by any search.
+ *
+ * That same order is what back follows: it first closes the search, then drops whatever is picked, and
+ * only then leaves - so nothing picked is lost to a search being closed.
+ *
+ * Add first works out what the picks would really add - each track once, none the playlist already
+ * holds - and asks to confirm that many. The screen leaves only after the tracks are in [destination]: a playlist, or
+ * the Private Folder, which they move into as its own Add moves them - see [AddToPrivateDialog].
+ */
+@Composable
+internal fun PlaylistTrackPicker(
+    title: String,
+    destination: PickDestination,
+    selection: SelectionState,
+    searchQuery: String?,
+    onSearchQueryChange: (String?) -> Unit,
+    visibleKeys: () -> List<SelectionKey>,
+    tabs: @Composable ColumnScope.() -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val navigator = LocalNavigator.current
+    val context = LocalContext.current
+    val viewModel: PlaylistPickerViewModel = hiltViewModel()
+    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+    // The tracks Add worked out, waiting on the user to confirm adding them.
+    var confirmingTrackIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var movingToPrivate by remember { mutableStateOf<List<Track>>(emptyList()) }
+
+    val addLabel = when (destination) {
+        is PickDestination.Playlist -> OptionsAction.PLAYLIST_ADD.label
+        PickDestination.PrivateFolder -> OptionsAction.ADD_TO_PRIVATE.label
+    }
+    val addAction = TopBarAction(label = addLabel, icon = MusicIcons.Check) {
+        val keys = selection.selectedKeys.filterIsInstance<SelectionKey>()
+        when (destination) {
+            is PickDestination.Playlist -> viewModel.resolveAddition(destination.id, keys) { trackIds ->
+                if (trackIds.isEmpty()) context.toast(context.getString(R.string.track_picker_already_added)) else confirmingTrackIds = trackIds
+            }
+            PickDestination.PrivateFolder -> viewModel.resolveTracks(keys) { movingToPrivate = it }
+        }
+    }
+
+    SelectionOptionsHost(selection) { openSelectionOptions, _ ->
+        Column(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.topBarBackground()) {
+                MusicTopAppBar(
+                    title = title,
+                drawsBackground = false,
+                    onNavigateBack = navigator::back,
+                    actions = listOf(TopBarAction(label = stringResource(R.string.library_search), icon = MusicIcons.Search) { onSearchQueryChange("") }),
+                    search = searchQuery?.let { query ->
+                        TopBarSearch(
+                            query = query,
+                            onQueryChange = onSearchQueryChange,
+                            onClose = { onSearchQueryChange(null) },
+                            actions = if (selection.isActive) {
+                                listOf(addAction, selection.selectAllAction(visibleKeys()))
+                            } else {
+                                emptyList()
+                            },
+                        )
+                    },
+                    // Left out while searching, so the field outranks the selection bar - and so the bar's
+                    // back handling closes the search before it drops the picks.
+                    selection = if (searchQuery == null) {
+                        selection.toLibraryTopBarSelection(
+                            listKeys = visibleKeys,
+                            actions = listOf(addAction),
+                            onMoreOptions = openSelectionOptions,
+                        )
+                    } else {
+                        null
+                    },
+                )
+                tabs()
+            }
+            content()
+        }
+    }
+
+    if (movingToPrivate.isNotEmpty()) {
+        // Closed rather than backed out of once moved: back would only close the search or the selection.
+        AddToPrivateDialog(tracks = movingToPrivate, onDismiss = { movingToPrivate = emptyList() }, onMoved = navigator::close)
+    }
+
+    val playlistId = (destination as? PickDestination.Playlist)?.id
+    if (playlistId != null && confirmingTrackIds.isNotEmpty()) {
+        val trackIds = confirmingTrackIds
+        val isSingle = trackIds.size == 1
+        val playlistName = playlists.itemsOrEmpty.find { it.id == playlistId }?.name ?: stringResource(R.string.track_picker_the_playlist)
+        MusicConfirmationDialog(
+            title = if (isSingle) stringResource(R.string.track_picker_add_title) else pluralStringResource(R.plurals.track_picker_add_some_title, trackIds.size, trackIds.size),
+            message = stringResource(if (isSingle) R.string.track_picker_add_message else R.string.track_picker_add_some_message, playlistName),
+            confirmLabel = stringResource(R.string.track_picker_add),
+            successMessage = if (isSingle) stringResource(R.string.track_picker_added) else pluralStringResource(R.plurals.track_picker_added_some, trackIds.size, trackIds.size),
+            failureMessage = stringResource(if (isSingle) R.string.track_picker_add_failed else R.string.track_picker_add_some_failed),
+            onDismiss = { confirmingTrackIds = emptyList() },
+            operation = { onFinished ->
+                viewModel.addToPlaylist(playlistId, trackIds) { succeeded ->
+                    onFinished(succeeded)
+                    // Closed rather than backed out of: back would only close the search or the selection.
+                    if (succeeded) navigator.close()
+                }
+            },
+        )
+    }
+}
+
+/** Where a picker's picks go - carried by its screen, so serialized with it on the way to the screen's activity. */
+sealed interface PickDestination : Serializable {
+    data class Playlist(val id: Long) : PickDestination
+
+    data object PrivateFolder : PickDestination
+}

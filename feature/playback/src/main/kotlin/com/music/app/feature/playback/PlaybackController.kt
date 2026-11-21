@@ -1,0 +1,742 @@
+package com.music.app.feature.playback
+
+import android.content.ComponentName
+import android.content.Context
+import android.net.Uri
+import android.os.Bundle
+import androidx.annotation.OptIn
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.Timeline
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
+import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.MoreExecutors
+import com.music.app.core.common.lifecycle.isAppInForeground
+import com.music.app.core.data.LibraryRepository
+import com.music.app.core.data.quickplay.QuickPlaySourceRepository
+import com.music.app.core.database.dao.QueueItemDao
+import com.music.app.core.database.entity.QueueItemEntity
+import com.music.app.core.datastore.PlaybackSettings
+import com.music.app.core.datastore.QuickPlayMode
+import com.music.app.core.datastore.QuickPlaySettings
+import com.music.app.core.datastore.ShuffleSettings
+import com.music.app.core.downloader.LiveDownloads
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.RepeatMode
+import com.music.app.core.model.Track
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+/**
+ * UI-facing façade over the [PlaybackService]'s media session.
+ *
+ * Connects to the service via a [MediaController], forwards transport commands to it, and
+ * republishes its state as a [StateFlow] of [PlaybackUiState] for observers (e.g. a ViewModel)
+ * to collect. Also owns queue persistence (save on every relevant player event, restore once per
+ * process on first connect) - ported from Fossify's `PlayerListener`/`AudioHelper` queue table.
+ */
+@Singleton
+class PlaybackController @Inject constructor(
+    @ApplicationContext private val context: Context,
+    private val queueItemDao: QueueItemDao,
+    private val repository: LibraryRepository,
+    private val playbackSettings: PlaybackSettings,
+    private val shuffleSettings: ShuffleSettings,
+    private val quickPlaySettings: QuickPlaySettings,
+    private val quickPlaySources: QuickPlaySourceRepository,
+    private val videoPlayback: VideoPlayback,
+) {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private var controller: MediaController? = null
+    private var positionPollJob: Job? = null
+
+    // The player's repeat int cannot tell RepeatMode.ONE from STOP_AFTER_CURRENT, so the stored
+    // mode is what the UI is told about.
+    @Volatile private var storedRepeatMode: RepeatMode = playbackSettings.repeatMode.value
+
+    // How many screens hold the playing track - see holdCurrentTrack.
+    private var trackHolds = 0
+
+    // Read from the setting rather than held only in memory, so a queue restored on a cold start is
+    // still playing from the collection it was started from.
+    @Volatile private var storedParent: PlaybackParent? = playbackSettings.playbackParent.value
+
+    private val hasRestoredQueue = AtomicBoolean(false)
+
+    /** Whether the queue put back is still to be prepared - see [restoreSavedQueue]. */
+    private var isRestoredQueueUnprepared = false
+
+    /**
+     * Whether any of the app's screens is started - what a queue put back waits for to be prepared while the
+     * session does not persist, see [PlaybackSettings.persistedPlaybackNotification].
+     */
+    private var isAppInFront = false
+
+    /** The videos handed over to be listened to, by media id - for one the library does not hold to be watched again. */
+    private var handedOverVideos: Map<String, Track> = emptyMap()
+
+    /** Whether the queue is known - see [PlaybackUiState.isReady]. */
+    private var isQueueSettled = false
+
+    private val _playbackState = MutableStateFlow(PlaybackUiState())
+    val playbackState: StateFlow<PlaybackUiState> = _playbackState.asStateFlow()
+
+    // Owned here, process-wide, so a timer set from one screen keeps running whichever screen is open.
+    private val sleepTimerHolder = SleepTimer(scope) {
+        controller?.pause()
+        videoPlayback.pause()
+    }
+    val sleepTimer: StateFlow<SleepTimerState> = sleepTimerHolder.state
+
+    private val playerListener = object : Player.Listener {
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) startPositionPolling() else stopPositionPolling()
+        }
+
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            sleepTimerHolder.onTrackEnd()
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED) sleepTimerHolder.onTrackEnd()
+        }
+
+        // Ported from Fossify's PlayerListener.onEvents: recompute UI state and re-save the
+        // queue on essentially every relevant player event - not on a timer.
+        override fun onEvents(player: Player, events: Player.Events) {
+            val mediaController = controller ?: return
+            if (events.containsAny(
+                    Player.EVENT_POSITION_DISCONTINUITY,
+                    Player.EVENT_MEDIA_ITEM_TRANSITION,
+                    Player.EVENT_TRACKS_CHANGED,
+                    Player.EVENT_TIMELINE_CHANGED,
+                    Player.EVENT_PLAYBACK_STATE_CHANGED,
+                    Player.EVENT_IS_PLAYING_CHANGED,
+                    Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                    Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED,
+                    Player.EVENT_REPEAT_MODE_CHANGED,
+                    Player.EVENT_AVAILABLE_COMMANDS_CHANGED,
+                    Player.EVENT_PLAYBACK_PARAMETERS_CHANGED,
+                )
+            ) {
+                updateUiState(mediaController)
+            }
+            if (events.containsAny(
+                    Player.EVENT_POSITION_DISCONTINUITY,
+                    Player.EVENT_MEDIA_ITEM_TRANSITION,
+                    Player.EVENT_TRACKS_CHANGED,
+                    Player.EVENT_TIMELINE_CHANGED,
+                    Player.EVENT_PLAYBACK_STATE_CHANGED,
+                    Player.EVENT_IS_PLAYING_CHANGED,
+                )
+            ) {
+                persistQueueState(mediaController)
+            }
+        }
+    }
+
+    init {
+        scope.launch {
+            playbackSettings.repeatMode.flow.collect { mode ->
+                storedRepeatMode = mode
+                controller?.let(::updateUiState)
+            }
+        }
+
+        // This class is the only writer, so collecting is how the stored value reaches the UI once
+        // the settings have loaded - the same path the repeat mode takes.
+        scope.launch {
+            playbackSettings.playbackParent.flow.collect { parent ->
+                storedParent = parent
+                controller?.let(::updateUiState)
+            }
+        }
+
+        scope.launch {
+            isAppInForeground().collect { inForeground ->
+                isAppInFront = inForeground
+                if (inForeground) prepareRestoredQueue()
+            }
+        }
+
+        val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+        val future = MediaController.Builder(context, sessionToken).buildAsync()
+        future.addListener(
+            {
+                val mediaController = future.get()
+                controller = mediaController
+                // A hold asked for before the player was reached is handed over now.
+                if (trackHolds > 0) sendTrackHold()
+                mediaController.addListener(playerListener)
+                updateUiState(mediaController)
+                if (mediaController.isPlaying) startPositionPolling()
+                restoreQueueIfNeeded(mediaController)
+            },
+            MoreExecutors.directExecutor(),
+        )
+    }
+
+    /**
+     * Builds a fresh queue from [tracks] and starts playback at [startIndex].
+     *
+     * [parent] is the collection those tracks came from, which is what every list marks as playing -
+     * null for a queue that stands for the whole library rather than one collection. It is written
+     * down with the queue, so the list playing when the app closes is still the one marked on the
+     * next launch.
+     *
+     * [shuffled] turns shuffle on or off for the new queue - Auxio's explicit Play and Shuffle - or,
+     * when null, the way tapping a row does: shuffle stays as it was while the user keeps shuffle, and
+     * is turned off otherwise - Auxio's implicit shuffle. Shuffled, [startIndex] still plays first and
+     * the rest follow in random order; the queue itself keeps the order it was given. It plays from
+     * [startPositionMs] into the track at [startIndex].
+     *
+     * Started at a video, it is watched instead, on a player of its own - see [VideoPlayback] - this queue simply pausing
+     * where it is. [opensFloating] has the video player open in its floating window.
+     */
+    fun playTracks(
+        tracks: List<Track>,
+        startIndex: Int,
+        parent: PlaybackParent? = null,
+        shuffled: Boolean? = null,
+        startPositionMs: Long = 0L,
+        opensFloating: Boolean = false,
+    ) {
+        if (tracks.getOrNull(startIndex)?.isVideo == true) {
+            val opening = if (opensFloating) VideoPlayerOpening.FLOATING else VideoPlayerOpening.FULL_SCREEN
+            watch(tracks, startIndex, shuffled, startPositionMs, opening) { it.toMediaItem(parent) }
+            return
+        }
+        val mediaController = controller ?: return
+        videoPlayback.close()
+        persistQueueState(mediaController)
+        scope.launch { playbackSettings.setPlaybackParent(parent) }
+        startQueue(mediaController, tracks.map { it.toMediaItem(parent) }, startIndex, startPositionMs, shuffled)
+    }
+
+    /**
+     * Plays the Private Folder's [tracks] - its items, as Tracks of its own - from [startIndex], as [playTracks] plays the
+     * library's. Listened to, the library's queue is saved where it was, never written over, and comes back as the Private
+     * Folder's playback ends - see [endPrivatePlayback].
+     */
+    fun playPrivateTracks(tracks: List<Track>, startIndex: Int) {
+        if (tracks.getOrNull(startIndex)?.isVideo == true) {
+            watch(tracks, startIndex, shuffled = null, startPositionMs = 0L, VideoPlayerOpening.FULL_SCREEN) { vaultMediaItem(context, it) }
+            return
+        }
+        val mediaController = controller ?: return
+        videoPlayback.close()
+        persistQueueState(mediaController)
+        startQueue(mediaController, tracks.map { vaultMediaItem(context, it) }, startIndex, startPositionMs = 0L, shuffled = null)
+    }
+
+    private fun watch(
+        tracks: List<Track>,
+        startIndex: Int,
+        shuffled: Boolean?,
+        startPositionMs: Long,
+        opening: VideoPlayerOpening,
+        toMediaItem: (Track) -> MediaItem,
+    ) {
+        val (videos, videoIndex) = videosFrom(tracks, startIndex, Track::isVideo)
+        openVideos(videos.map { VideoQueueItem(it, toMediaItem(it)) }, videoIndex, shuffled, startPositionMs, opening)
+    }
+
+    /**
+     * Watches [queue] from [startIndex] in the video player, the music pausing where it is - at [startPositionMs], or else
+     * where the music player is in it, playing it as audio, or else where it was left. Closed, the music player holding it
+     * goes on from where it was left: the two never disagree on where one video is.
+     */
+    private fun openVideos(
+        queue: List<VideoQueueItem>,
+        startIndex: Int,
+        shuffled: Boolean? = null,
+        startPositionMs: Long = 0L,
+        opening: VideoPlayerOpening = VideoPlayerOpening.FULL_SCREEN,
+    ) {
+        val mediaController = controller
+        fun MediaController.holds(item: MediaItem) = currentMediaItem?.mediaId == item.mediaId
+        val heardAtMs = queue.getOrNull(startIndex)?.let { start -> mediaController?.takeIf { it.holds(start.mediaItem) }?.currentPosition }
+        mediaController?.pause()
+        videoPlayback.open(queue, startIndex, shuffled, startPositionMs.takeIf { it > 0L } ?: heardAtMs ?: 0L, opening) { closedItem, closedAtMs ->
+            if (mediaController?.holds(closedItem) == true) mediaController.seekTo(closedAtMs)
+        }
+    }
+
+    /**
+     * Goes on with [track], chosen again from the list it is already playing from: a video playing as audio is watched
+     * again, in the video player - see [watchCurrent] - and music pauses or resumes.
+     */
+    fun reselect(track: Track) {
+        if (track.isVideo) watchCurrent() else togglePlayPause()
+    }
+
+    /**
+     * Watches [uri], a video another app opened with Music, in the video player's floating window over that app - apart
+     * from the library, as every outside file plays: see [outsideMediaItem]. The music pauses where it is.
+     */
+    fun watchOutsideVideo(uri: Uri, title: String) {
+        val video = VideoQueueItem(outsideVideo(uri, title), outsideMediaItem(uri, title, isVideo = true))
+        openVideos(listOf(video), startIndex = 0, opening = VideoPlayerOpening.FLOATING)
+    }
+
+    /**
+     * Plays download [downloadId] as it downloads, as [title] - see [LiveDownloadSources]: a video in the video player, as an
+     * outside video is watched, a sound in place of the queue, saved to come back to. Played on from the file it saves.
+     */
+    fun playDownloading(downloadId: Long, title: String, isVideo: Boolean) {
+        val uri = Uri.parse(LiveDownloads.addressOf(downloadId))
+        if (isVideo) {
+            openVideos(listOf(VideoQueueItem(outsideVideo(uri, title), outsideMediaItem(uri, title, isVideo = true))), startIndex = 0)
+            return
+        }
+        val mediaController = controller ?: return
+        videoPlayback.close()
+        persistQueueState(mediaController)
+        startQueue(mediaController, listOf(outsideMediaItem(uri, title, isVideo = false)), startIndex = 0, startPositionMs = 0L, shuffled = false)
+    }
+
+    /**
+     * Has the video playing as audio watched, from where it is, with the videos of its queue - this queue waiting, paused,
+     * and carrying on from wherever the video is left.
+     */
+    fun watchCurrent() {
+        val mediaController = controller ?: return
+        val current = mediaController.currentMediaItem ?: return
+        val queue = List(mediaController.mediaItemCount, mediaController::getMediaItemAt).mapNotNull { item ->
+            val track = handedOverVideos[item.mediaId] ?: item.idInSpace?.takeUnless { item.isVaultItem }?.let(repository.tracksById.value::get)
+            // Made anew: what comes back through the session need not carry its file's address.
+            track?.takeIf { it.isVideo }?.let { VideoQueueItem(it, if (item.isVaultItem) vaultMediaItem(context, it) else it.toMediaItem(item.playbackParent)) }
+        }
+        val index = queue.indexOfFirst { it.mediaItem.mediaId == current.mediaId }
+        if (index < 0) return
+        openVideos(queue, index)
+    }
+
+    /**
+     * Has what is being watched listened to from now on, from where it is - in the mini player, with the notification and
+     * in the background, as every queue listened to is - and closes the video player.
+     */
+    fun listenToWatchedVideo() {
+        val mediaController = controller ?: return
+        val handOver = videoPlayback.handOver() ?: return
+        persistQueueState(mediaController)
+        handedOverVideos = handOver.queue.associate { it.mediaItem.mediaId to it.track }
+        val items = handOver.queue.map { it.mediaItem }
+        val current = items[handOver.index]
+        if (!current.isVaultItem) {
+            storedParent = current.playbackParent
+            scope.launch { playbackSettings.setPlaybackParent(current.playbackParent) }
+        }
+        startQueue(mediaController, items, handOver.index, handOver.positionMs, shuffled = null)
+    }
+
+    /**
+     * Ends the Private Folder's playback - left, or locked - and puts back the library's saved queue, paused where
+     * it was left, so nothing of the folder plays or shows outside it. A queue the folder emptied gives way to it
+     * too; the library's own queue playing is left as it is.
+     */
+    fun endPrivatePlayback() {
+        videoPlayback.closeIfPrivate()
+        val mediaController = controller ?: return
+        if (mediaController.currentMediaItem?.isVaultItem == false) return
+        returnToSavedQueue(mediaController)
+    }
+
+    private fun startQueue(
+        mediaController: MediaController,
+        mediaItems: List<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+        shuffled: Boolean?,
+    ) {
+        val shuffle = shuffled ?: (shuffleSettings.keepShuffle.value && mediaController.shuffleModeEnabled)
+        // Before the items, so the player builds the new shuffle order around startIndex.
+        if (shuffle != mediaController.shuffleModeEnabled) setShuffleEnabled(shuffle)
+        mediaController.setMediaItems(mediaItems, startIndex, startPositionMs)
+        mediaController.prepare()
+        mediaController.play()
+    }
+
+    /** Swaps whatever plays for the saved queue - the listened-to one, never written over by what replaced it - paused. */
+    private fun returnToSavedQueue(mediaController: MediaController) {
+        mediaController.stop()
+        mediaController.clearMediaItems()
+        scope.launch { restoreSavedQueue(mediaController) }
+    }
+
+    /**
+     * Plays what quick play is set to play - every track, a listening history or one collection; see
+     * [QuickPlaySourceRepository] - the way it is set to: what the launcher shortcut plays.
+     */
+    fun quickPlay() {
+        scope.launch { quickPlayNow(quickPlaySources.current().parent, quickPlaySettings.mode.value) }
+    }
+
+    /**
+     * Plays [parent] - every track while it is null - as [mode] says: what the library's quick play button
+     * shows, so a tap on it plays exactly that.
+     */
+    fun quickPlay(parent: PlaybackParent?, mode: QuickPlayMode) {
+        scope.launch { quickPlayNow(parent, mode) }
+    }
+
+    /**
+     * Plays [parent]'s tracks in the order its own list shows them: shuffled from one picked at random -
+     * Auxio's `shuffleAll` - or from the first, in order. It is what the queue plays from, so its list is
+     * marked as playing, and every track marks none - as playing from the Tracks tab does.
+     *
+     * Waits for the tracks and for the saved queue to be back, so asked for as the app opens - from the
+     * launcher shortcut - it is neither lost nor overwritten by the queue being restored.
+     */
+    private suspend fun quickPlayNow(parent: PlaybackParent?, mode: QuickPlayMode) {
+        val (playedParent, tracks) = quickPlaySources.tracks(parent)
+        if (tracks.isEmpty()) return
+        playbackState.first { it.isReady }
+        when (mode) {
+            QuickPlayMode.SHUFFLE -> playTracks(tracks, tracks.indices.random(), playedParent, shuffled = true)
+            QuickPlayMode.PLAY -> playTracks(tracks, 0, playedParent, shuffled = false)
+        }
+    }
+
+    /** Pauses or plays by what the play/pause button shows, so a press always does what it says. */
+    @OptIn(UnstableApi::class)
+    fun togglePlayPause() {
+        val mediaController = controller ?: return
+        Util.handlePlayPauseButtonAction(mediaController)
+    }
+
+    fun pause() {
+        controller?.pause()
+    }
+
+    fun seekTo(positionMs: Long) {
+        controller?.seekTo(positionMs)
+    }
+
+    /** The player's position at this moment, for a screen that follows it closer than [playbackState] ticks. */
+    fun currentPositionMs(): Long = controller?.currentPosition ?: _playbackState.value.positionMs
+
+    /**
+     * Moves to the next track - after the last, the first - whatever the repeat mode: a press in the app always skips.
+     * On the player itself, as the system's next is hidden while a track repeats - see [PlaybackForwardingPlayer.skip].
+     */
+    fun skipToNext() {
+        skip(TrackSkip.NEXT)
+    }
+
+    /** Moves to the previous track - before the first, the last - or rewinds first, where the user has it do so. */
+    fun skipToPrevious() {
+        skip(TrackSkip.PREVIOUS)
+    }
+
+    /** Moves to the track before the current one without rewinding the current one first - what a swipe means. */
+    fun skipToPreviousTrack() {
+        skip(TrackSkip.PREVIOUS_TRACK)
+    }
+
+    private fun skip(skip: TrackSkip) {
+        val args = Bundle().apply { putString(PlaybackSessionCommands.EXTRA_SKIP, skip.name) }
+        controller?.sendCustomCommand(PlaybackSessionCommands.skipCommand, args)
+    }
+
+    fun playQueueItem(mediaItemIndex: Int) {
+        val mediaController = controller ?: return
+        mediaController.seekToDefaultPosition(mediaItemIndex)
+        mediaController.play()
+    }
+
+    /**
+     * Moves the track at [fromPosition] of the queue to [toPosition] - places in the order it plays, which
+     * is the shuffle order while shuffling. Done on the player itself, which alone holds that order.
+     */
+    fun moveQueueItem(fromPosition: Int, toPosition: Int) {
+        val args = Bundle().apply {
+            putInt(PlaybackSessionCommands.EXTRA_FROM_POSITION, fromPosition)
+            putInt(PlaybackSessionCommands.EXTRA_TO_POSITION, toPosition)
+        }
+        controller?.sendCustomCommand(PlaybackSessionCommands.moveQueueItemCommand, args)
+    }
+
+    /**
+     * Takes the item at [mediaItemIndex] out of the queue - on the player itself, as every change to what
+     * the queue holds is made. A controller removing it would show the queue at once as it guesses it will
+     * be, and media3 guesses without the shuffle order: while shuffling, the queue would be shown in its
+     * unshuffled order for a moment before the player's own answer put it back.
+     */
+    fun removeQueueItem(mediaItemIndex: Int) {
+        val args = Bundle().apply { putInt(PlaybackSessionCommands.EXTRA_MEDIA_ITEM_INDEX, mediaItemIndex) }
+        controller?.sendCustomCommand(PlaybackSessionCommands.removeQueueItemCommand, args)
+    }
+
+    /**
+     * Takes every copy of the tracks [trackIds] name out of the queue - what deleting their files needs,
+     * so the player never reaches a file that is gone. On the player itself, as [removeQueueItem] is.
+     */
+    fun removeFromQueue(trackIds: Set<Long>) {
+        videoPlayback.remove(trackIds, PlaybackSpace.Library)
+        val args = Bundle().apply { putLongArray(PlaybackSessionCommands.EXTRA_TRACK_IDS, trackIds.toLongArray()) }
+        controller?.sendCustomCommand(PlaybackSessionCommands.removeTracksCommand, args)
+    }
+
+    /**
+     * Takes the Private Folder items [itemIds] out of its queue, where it plays - what moving or deleting their
+     * files needs. Its ids are its items', which only this side reads, so taken out here, last to first; the
+     * library's queue playing is left alone. Emptied, the queue gives way to the library's.
+     */
+    fun removePrivateFromQueue(itemIds: Set<Long>) {
+        videoPlayback.remove(itemIds, PlaybackSpace.Private)
+        val mediaController = controller ?: return
+        if (mediaController.currentMediaItem?.isVaultItem != true) return
+        for (index in mediaController.mediaItemCount - 1 downTo 0) {
+            if (mediaController.getMediaItemAt(index).idInSpace in itemIds) mediaController.removeMediaItem(index)
+        }
+        if (mediaController.mediaItemCount == 0) endPrivatePlayback()
+    }
+
+    /**
+     * Puts [track] back where it was taken from the queue: at [mediaItemIndex] in the player's own order
+     * and at [playPosition] in the order it plays - both, so it is back in place shuffled or not.
+     */
+    fun restoreQueueItem(track: Track, mediaItemIndex: Int, playPosition: Int) {
+        val mediaController = controller ?: return
+        // A Private Folder item is its own file, which only this side knows of: put back as it is, in place.
+        if (mediaController.currentMediaItem?.isVaultItem == true) {
+            mediaController.addMediaItem(mediaItemIndex.coerceIn(0, mediaController.mediaItemCount), vaultMediaItem(context, track))
+            return
+        }
+        val args = Bundle().apply {
+            putLong(PlaybackSessionCommands.EXTRA_TRACK_ID, track.id)
+            putInt(PlaybackSessionCommands.EXTRA_MEDIA_ITEM_INDEX, mediaItemIndex)
+            putInt(PlaybackSessionCommands.EXTRA_PLAY_POSITION, playPosition)
+        }
+        mediaController.sendCustomCommand(PlaybackSessionCommands.restoreQueueItemCommand, args)
+    }
+
+    /**
+     * Plays [tracks] right after the current track, in play order - moving any already queued rather
+     * than repeating them. Starts them instead when nothing is queued.
+     */
+    fun playNext(tracks: List<Track>) {
+        enqueue(tracks, PlaybackSessionCommands.playNextCommand)
+    }
+
+    /**
+     * Plays [tracks] after everything else queued - moving any already queued rather than repeating
+     * them. Starts them instead when nothing is queued.
+     */
+    fun addToQueue(tracks: List<Track>) {
+        enqueue(tracks, PlaybackSessionCommands.addToQueueCommand)
+    }
+
+    private fun enqueue(tracks: List<Track>, command: SessionCommand) {
+        val mediaController = controller ?: return
+        if (mediaController.mediaItemCount == 0) {
+            playTracks(tracks, startIndex = 0)
+            return
+        }
+        val args = Bundle().apply {
+            putLongArray(PlaybackSessionCommands.EXTRA_TRACK_IDS, tracks.map(Track::id).toLongArray())
+        }
+        mediaController.sendCustomCommand(command, args)
+    }
+
+    /** Stops playback and drops the queue, the saved copy included, so nothing comes back on the next launch. */
+    fun stopAndClearQueue() {
+        val mediaController = controller ?: return
+        mediaController.stop()
+        mediaController.clearMediaItems()
+        scope.launch { playbackSettings.setPlaybackParent(null) }
+        scope.launch(Dispatchers.IO) { queueItemDao.clear() }
+    }
+
+    fun startSleepTimer(minutes: Int) {
+        sleepTimerHolder.start(minutes)
+    }
+
+    fun startSleepTimerAtEndOfTrack() {
+        sleepTimerHolder.startAtEndOfTrack()
+    }
+
+    fun clearSleepTimer() {
+        sleepTimerHolder.clear()
+    }
+
+    fun setShuffleEnabled(enabled: Boolean) {
+        controller?.shuffleModeEnabled = enabled
+        scope.launch { shuffleSettings.setEnabled(enabled) }
+    }
+
+    // Only the stored mode is written; PlaybackService puts it on the player and the notification,
+    // and the collector in init hands it to the UI - the same path a notification press takes.
+    /**
+     * Has the playing track repeat rather than go on to the next, until the returned release is called - for a
+     * screen where the track is being worked on, so it is never carried off to another mid-way. Holds add up: the
+     * track plays on as the user set it once every one is released. The stored repeat mode is left as it is, and is
+     * what is still shown.
+     */
+    fun holdCurrentTrack(): () -> Unit {
+        if (trackHolds++ == 0) sendTrackHold()
+        var isReleased = false
+        return {
+            if (!isReleased) {
+                isReleased = true
+                if (--trackHolds == 0) sendTrackHold()
+            }
+        }
+    }
+
+    private fun sendTrackHold() {
+        val args = Bundle().apply { putBoolean(PlaybackSessionCommands.EXTRA_HOLD, trackHolds > 0) }
+        controller?.sendCustomCommand(PlaybackSessionCommands.holdTrackCommand, args)
+    }
+
+    fun cycleRepeatMode() {
+        scope.launch { playbackSettings.cycleRepeatMode() }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun updateUiState(mediaController: MediaController) {
+        val queue = mediaController.queueEntries()
+        val currentMediaItemIndex = mediaController.currentMediaItemIndex
+        val currentItem = mediaController.currentMediaItem
+        val isPrivate = currentItem?.isVaultItem == true
+        _playbackState.update {
+            it.copy(
+                isReady = isQueueSettled,
+                // Playing as the user asked for it rather than as heard: a newly chosen track stays
+                // playing while it buffers, instead of passing through a moment of pause.
+                isPlaying = !Util.shouldShowPlayButton(mediaController),
+                isBuffering = mediaController.playbackState == Player.STATE_BUFFERING,
+                hasEnded = mediaController.playbackState == Player.STATE_ENDED,
+                currentTrackId = currentItem?.idInSpace,
+                // The Private Folder plays from no collection of the library's.
+                parent = if (isPrivate) null else storedParent,
+                positionMs = mediaController.currentPosition,
+                durationMs = currentDurationMsOrElse(it.durationMs),
+                shuffleEnabled = mediaController.shuffleModeEnabled,
+                repeatMode = storedRepeatMode,
+                queue = queue,
+                currentQueueIndex = queue.indexOfFirst { entry -> entry.mediaItemIndex == currentMediaItemIndex },
+                playbackSpeed = mediaController.playbackParameters.speed,
+                space = if (isPrivate) PlaybackSpace.Private else PlaybackSpace.Library,
+            )
+        }
+    }
+
+    // Ported from Fossify's AudioHelper.resetQueue: a full delete-and-reinsert of the queue table
+    // on every save, keeping it trivially consistent with the player's current timeline.
+    private fun persistQueueState(mediaController: MediaController) {
+        val currentItem = mediaController.currentMediaItem ?: return
+        val currentId = currentItem.mediaId.toLongOrNull() ?: return
+        val timeline = mediaController.currentTimeline
+        if (timeline.isEmpty) return
+        val position = mediaController.currentPosition
+        val window = Timeline.Window()
+        val shufflePositions = IntArray(timeline.windowCount)
+        var shuffledIndex = timeline.getFirstWindowIndex(true)
+        for (shufflePosition in shufflePositions.indices) {
+            shufflePositions[shuffledIndex] = shufflePosition
+            shuffledIndex = timeline.getNextWindowIndex(shuffledIndex, Player.REPEAT_MODE_OFF, true)
+        }
+        val items = (0 until timeline.windowCount).mapNotNull { index ->
+            val id = timeline.getWindow(index, window).mediaItem.mediaId.toLongOrNull()
+                ?: return@mapNotNull null
+            QueueItemEntity(
+                trackId = id,
+                trackOrder = index,
+                isCurrent = id == currentId,
+                lastPositionMs = if (id == currentId) position else 0L,
+                shufflePosition = shufflePositions[index],
+            )
+        }
+        if (items.isEmpty()) return
+        scope.launch(Dispatchers.IO) { queueItemDao.resetQueue(items) }
+    }
+
+    // Ported from Fossify's Player.maybePreparePlayer: restore is triggered by the first
+    // MediaController to connect, guarded so it only ever runs once per process and only when
+    // nothing is already loaded (e.g. the service survived and already has a queue).
+    private fun restoreQueueIfNeeded(mediaController: MediaController) {
+        if (mediaController.currentMediaItem != null || !hasRestoredQueue.compareAndSet(false, true)) {
+            settleQueue(mediaController)
+            return
+        }
+        scope.launch {
+            restoreSavedQueue(mediaController)
+            settleQueue(mediaController)
+        }
+    }
+
+    private suspend fun restoreSavedQueue(mediaController: MediaController) {
+        val savedQueue = loadSavedQueue(queueItemDao, repository, storedParent) ?: return
+        // Something started while it was being read is what the user asked for since.
+        if (mediaController.mediaItemCount > 0) return
+        // Ahead of the items, so the order is waiting on the player when they arrive.
+        savedQueue.shuffleOrder?.let { order ->
+            val args = Bundle().apply { putIntArray(PlaybackSessionCommands.EXTRA_SHUFFLE_ORDER, order) }
+            mediaController.sendCustomCommand(PlaybackSessionCommands.restoreShuffleOrderCommand, args)
+        }
+        mediaController.setMediaItems(savedQueue.mediaItems, savedQueue.currentIndex, savedQueue.startPositionMs)
+        // A prepared queue shows its notification, and the process also starts for what runs in the background -
+        // an update check, a widget drawn again. So while the session does not persist, it is prepared only once
+        // the app is in front, or by a press of play - which prepares whatever it plays.
+        isRestoredQueueUnprepared = true
+        if (isAppInFront || playbackSettings.persistedPlaybackNotification.value) prepareRestoredQueue()
+    }
+
+    private fun prepareRestoredQueue() {
+        val mediaController = controller ?: return
+        if (!isRestoredQueueUnprepared) return
+        isRestoredQueueUnprepared = false
+        if (mediaController.playbackState == Player.STATE_IDLE) mediaController.prepare()
+    }
+
+    /** Marks the queue known and publishes it, whether or not anything was restored. */
+    private fun settleQueue(mediaController: MediaController) {
+        isQueueSettled = true
+        updateUiState(mediaController)
+    }
+
+    private fun currentDurationMsOrElse(fallback: Long): Long {
+        val duration = controller?.duration ?: return fallback
+        return if (duration == C.TIME_UNSET) fallback else duration
+    }
+
+    private fun startPositionPolling() {
+        if (positionPollJob?.isActive == true) return
+        positionPollJob = scope.launch {
+            while (isActive) {
+                controller?.let { mediaController ->
+                    _playbackState.update { it.copy(positionMs = mediaController.currentPosition) }
+                }
+                delay(500)
+            }
+        }
+    }
+
+    private fun stopPositionPolling() {
+        positionPollJob?.cancel()
+        positionPollJob = null
+    }
+
+}

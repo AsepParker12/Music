@@ -1,0 +1,161 @@
+package com.music.app.feature.download
+
+import android.content.Context
+import android.text.format.Formatter
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
+import com.music.app.core.downloader.AudioTrackKind
+import com.music.app.core.downloader.MediaFormat
+import com.music.app.core.downloader.TRANSCRIBED_CAPTIONS
+import com.music.app.core.downloader.captionLanguageOf
+import com.music.app.core.model.AudioFormat
+import com.music.app.core.model.DownloadFailure
+import com.music.app.core.model.DownloadKind
+import com.music.app.core.model.VideoFormat
+import com.music.app.core.model.VideoQuality
+import java.util.Locale
+import com.music.app.core.designsystem.icon.MusicIcons
+
+/** The one place each of the downloader's choices is named - the download screen's and the Downloads settings' alike. */
+internal val DownloadKind.labelRes: Int
+    get() = when (this) {
+        DownloadKind.VIDEO -> R.string.download_kind_video
+        DownloadKind.AUDIO -> R.string.download_kind_audio
+        DownloadKind.SUBTITLES -> R.string.download_kind_subtitles
+        DownloadKind.FILE -> R.string.download_kind_file
+    }
+
+/** How a saved download of this kind is opened: played - or, its captions alone or a file, opened in an app that reads them. */
+internal val DownloadKind.openLabelRes: Int get() = if (isMedia) R.string.download_play else R.string.download_open
+
+internal val DownloadKind.openIcon: ImageVector get() = if (isMedia) MusicIcons.Play else MusicIcons.FileOpen
+
+/** What stands for a kind beside its name. */
+internal val DownloadKind.icon: ImageVector
+    get() = when (this) {
+        DownloadKind.VIDEO -> MusicIcons.Video
+        DownloadKind.AUDIO -> MusicIcons.Song
+        DownloadKind.SUBTITLES -> MusicIcons.Subtitles
+        DownloadKind.FILE -> MusicIcons.File
+    }
+
+internal val VideoQuality.labelRes: Int
+    get() = when (this) {
+        VideoQuality.BEST -> R.string.download_quality_best
+        VideoQuality.P2160 -> R.string.download_quality_2160
+        VideoQuality.P1440 -> R.string.download_quality_1440
+        VideoQuality.P1080 -> R.string.download_quality_1080
+        VideoQuality.P720 -> R.string.download_quality_720
+        VideoQuality.P480 -> R.string.download_quality_480
+        VideoQuality.P360 -> R.string.download_quality_360
+    }
+
+internal val VideoFormat.labelRes: Int
+    get() = when (this) {
+        VideoFormat.LEGACY -> R.string.download_video_format_legacy
+        VideoFormat.QUALITY -> R.string.download_video_format_quality
+    }
+
+internal val VideoFormat.summaryRes: Int
+    get() = when (this) {
+        VideoFormat.LEGACY -> R.string.download_video_format_legacy_summary
+        VideoFormat.QUALITY -> R.string.download_video_format_quality_summary
+    }
+
+internal val AudioFormat.labelRes: Int
+    get() = when (this) {
+        AudioFormat.ORIGINAL -> R.string.download_format_original
+        AudioFormat.M4A -> R.string.download_format_m4a
+        AudioFormat.MP3 -> R.string.download_format_mp3
+        AudioFormat.OPUS -> R.string.download_format_opus
+    }
+
+/** What the user can do about a failure - the one button its sheet offers. */
+internal enum class FailureFix(val labelRes: Int, val icon: ImageVector) {
+    TRY_AGAIN(R.string.download_fix_try_again, MusicIcons.Refresh),
+    TRY_BEST_FORMAT(R.string.download_fix_try_again, MusicIcons.Refresh),
+    OPEN_LINK(R.string.download_open_link, MusicIcons.OpenInNew),
+    SIGN_IN(R.string.download_fix_sign_in, MusicIcons.Login),
+    FREE_UP_SPACE(R.string.download_fix_free_up_space, MusicIcons.Storage),
+    GET_DOWNLOADER(R.string.download_fix_get_downloader, MusicIcons.Extension),
+    DOWNLOAD_ANYWAY(R.string.download_fix_download_anyway, MusicIcons.Download),
+}
+
+/** How a failure is told: [rowRes] on its row; [titleRes] and [messageRes] in its sheet, with its [fix]. */
+internal class FailurePresentation(val rowRes: Int, val titleRes: Int, val messageRes: Int, val icon: ImageVector, val fix: FailureFix)
+
+/** The one place each failure is put in words, and given its fix. */
+internal val DownloadFailure.presentation: FailurePresentation
+    get() = when (this) {
+        DownloadFailure.NO_NETWORK -> FailurePresentation(
+            R.string.download_failure_no_network, R.string.download_failure_no_network, R.string.download_failure_no_network_message, MusicIcons.WifiOff, FailureFix.TRY_AGAIN,
+        )
+        DownloadFailure.UNAVAILABLE -> FailurePresentation(
+            R.string.download_failure_unavailable_row, R.string.download_failure_unavailable, R.string.download_failure_unavailable_message, MusicIcons.Block, FailureFix.OPEN_LINK,
+        )
+        DownloadFailure.LOGIN_REQUIRED -> FailurePresentation(
+            R.string.download_failure_login_required, R.string.download_failure_login_required, R.string.download_failure_login_required_message, MusicIcons.Lock, FailureFix.SIGN_IN,
+        )
+        DownloadFailure.FORMAT_GONE -> FailurePresentation(
+            R.string.download_failure_format_gone_row, R.string.download_failure_format_gone, R.string.download_failure_format_gone_message, MusicIcons.HighQuality, FailureFix.TRY_BEST_FORMAT,
+        )
+        DownloadFailure.NO_SPACE -> FailurePresentation(
+            R.string.download_failure_no_space, R.string.download_failure_no_space, R.string.download_failure_no_space_message, MusicIcons.Storage, FailureFix.FREE_UP_SPACE,
+        )
+        DownloadFailure.NO_DOWNLOADER -> FailurePresentation(
+            R.string.download_failure_no_downloader, R.string.download_failure_no_downloader, R.string.download_failure_no_downloader_message, MusicIcons.Extension, FailureFix.GET_DOWNLOADER,
+        )
+        DownloadFailure.ALREADY_SAVED -> FailurePresentation(
+            R.string.download_failure_already_saved, R.string.download_failure_already_saved, R.string.download_failure_already_saved_message, MusicIcons.Verified,
+            FailureFix.DOWNLOAD_ANYWAY,
+        )
+        DownloadFailure.FAILED -> FailurePresentation(
+            R.string.download_failed, R.string.download_failure_other, R.string.download_failure_other_message, MusicIcons.Error, FailureFix.TRY_AGAIN,
+        )
+    }
+
+internal val AudioTrackKind.labelRes: Int
+    get() = when (this) {
+        AudioTrackKind.ORIGINAL -> R.string.download_track_original
+        AudioTrackKind.DUBBED -> R.string.download_track_dubbed
+        AudioTrackKind.DESCRIPTIVE -> R.string.download_track_descriptive
+    }
+
+/** What a sound is, told under its language in the audio track picker. */
+internal val AudioTrackKind.summaryRes: Int
+    get() = if (this == AudioTrackKind.ORIGINAL) R.string.download_track_original_summary else labelRes
+
+/**
+ * A language as the user reads it, in their own - "Spanish (Mexico)" - from a site's code, "es-MX"; a described sound's,
+ * "en-desc", as its language's; and one its site leaves unnamed, "und", as the language spoken.
+ */
+@Composable
+internal fun languageName(code: String): String = if (code == "und") stringResource(R.string.download_language_spoken) else displayName(code)
+
+/** A picked caption as the user reads it: its language - or, transcribed from the speech, that it is. */
+@Composable
+internal fun captionName(code: String): String =
+    if (code == TRANSCRIBED_CAPTIONS) stringResource(R.string.download_subtitles_transcribed) else languageName(captionLanguageOf(code))
+
+/** [code]'s language named in the user's own - the code itself where it has no name. */
+private fun displayName(code: String): String {
+    val locale = Locale.forLanguageTag(code.removeSuffix("-desc"))
+    return locale.getDisplayName(Locale.getDefault()).takeIf { it.isNotBlank() && it != code }
+        ?.replaceFirstChar { it.titlecase(Locale.getDefault()) } ?: code
+}
+
+/** The languages captions can be translated into, as their codes: the device's and English first, then the rest by name. */
+internal fun translatableLanguages(): List<String> {
+    val first = listOf(Locale.getDefault().language, "en").distinct()
+    val rest = Locale.getISOLanguages().filter { it !in first && displayName(it) != it }.sortedBy(::displayName)
+    return first + rest
+}
+
+/** "1080p60 · avc1 · 120 MB", "M4A · 128 kbps · 4 MB" - what tells one format from another. */
+internal fun MediaFormat.facts(context: Context): String = listOfNotNull(
+    height?.let { "${it}p${fps?.takeIf { fps -> fps > 30 } ?: ""}" } ?: extension.uppercase(),
+    (videoCodec ?: audioCodec)?.substringBefore('.'),
+    bitrateKbps?.takeIf { height == null }?.let { context.getString(R.string.download_bitrate, it) },
+    sizeBytes?.let { (if (isSizeApproximate) "~" else "") + Formatter.formatShortFileSize(context, it) },
+).joinToString(" · ")

@@ -1,0 +1,119 @@
+package com.music.app.feature.library
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.music.app.core.data.LibraryContent
+import com.music.app.core.data.LibraryRepository
+import com.music.app.core.data.itemsOrEmpty
+import com.music.app.core.data.playlist.PlaylistFile
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.Track
+import com.music.app.feature.library.selection.SelectionKey
+import com.music.app.feature.library.sort.SortControl
+import com.music.app.feature.playback.PlaybackController
+import java.io.OutputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+/**
+ * What every "a heading, then a list of tracks you can play" screen needs: the album, artist, genre
+ * and folder detail screens are the same screen with a different `WHERE` clause.
+ *
+ * Each of those used to observe the **entire** tracks table and filter it down to its own handful of
+ * rows, on the main thread, every time anything in the library changed. Subclasses now supply a flow
+ * that queries only their own rows (off an index added for exactly that), and everything else -
+ * playback, the highlighted row - lives here once.
+ */
+abstract class TrackListDetailViewModel(
+    private val playbackController: PlaybackController,
+    private val repository: LibraryRepository,
+) : ViewModel() {
+
+    abstract val tracks: StateFlow<LibraryContent<Track>>
+
+    /** How this list is sorted, or null for one whose order is its content - Recent and Most played. */
+    open val sort: SortControl? = null
+
+    /**
+     * The section each track sits in under [sort]'s order - what the fast scroller's popup names. Null for a list with
+     * no sort, and while its sort names none. Read once [sort] is, which a subclass sets after this class is built.
+     */
+    val trackSections: StateFlow<((Track) -> String?)?> by lazy {
+        sort?.let { repository.collectionTrackSections(it.target) }
+            ?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+            ?: MutableStateFlow(null)
+    }
+
+    /**
+     * The collection this screen is, which playing from here plays from.
+     *
+     * It is what lets this list mark the playing track only while the queue is its own - the same
+     * track playing from somewhere else leaves the row alone, exactly as on Auxio's detail screens.
+     */
+    abstract val playbackParent: PlaybackParent
+
+    /** What this screen lists above its tracks - see [DetailSection]. Nothing, for most of them. */
+    internal open val sections: StateFlow<List<DetailSection>> = MutableStateFlow(emptyList())
+
+    /** Where each video was left - see [LibraryRepository.resumePositionsMs]. */
+    val resumePositionsMs: StateFlow<Map<Long, Long>> = repository.resumePositionsMs
+
+    /** What this list marks as playing - see [LibraryPlayback]. */
+    val playback: StateFlow<LibraryPlayback> = libraryPlayback(playbackController, repository)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LibraryPlayback())
+
+    /**
+     * Plays [track] from this list - or, when it is already playing from this very list, pauses or
+     * resumes it rather than starting the queue over. See [LibraryPlayback.isReselection]. A video playing as
+     * audio is watched again instead, in the video player; one started opens there - see
+     * [PlaybackController.playTracks].
+     */
+    fun onTrackClick(track: Track) {
+        if (playback.value.isReselection(track, playbackParent)) {
+            playbackController.reselect(track)
+            return
+        }
+        val all = tracks.value.itemsOrEmpty
+        val index = all.indexOfFirst { it.id == track.id }
+        if (index >= 0) playbackController.playTracks(all, index, playbackParent)
+    }
+
+    /**
+     * Plays the whole list from its top - or, [shuffled], shuffled from a track picked at random - as
+     * the header's Play and Shuffle do, and the options sheet's.
+     */
+    fun onPlayAll(shuffled: Boolean) {
+        val all = tracks.value.itemsOrEmpty
+        if (all.isEmpty()) return
+        playbackController.playTracks(all, if (shuffled) all.indices.random() else 0, playbackParent, shuffled)
+    }
+
+    /**
+     * Keeps [trackIds] - the whole list, as a drag left it - as this list's own order, and puts the list
+     * in it. Called once on drop, never while the finger moves - see [SortControl.arrange].
+     */
+    fun arrange(trackIds: List<Long>) {
+        sort?.arrange(trackIds)
+    }
+
+    /** Every row's selection key, which is what the context bar's "select all" selects. */
+    fun selectableKeys(): List<SelectionKey> = tracks.value.itemsOrEmpty.map { SelectionKey.Track(it.id) }
+
+    /**
+     * Writes what this screen is showing as an M3U file.
+     *
+     * Available to every track list, including the derived ones: exporting only reads, so "the
+     * fifty things I played most" is as exportable as a playlist someone built by hand.
+     */
+    fun exportTo(openStream: () -> OutputStream?) {
+        val exported = tracks.value.itemsOrEmpty
+        if (exported.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            openStream()?.use { stream -> writeM3u(stream, PlaylistFile.of(exported)) }
+        }
+    }
+}

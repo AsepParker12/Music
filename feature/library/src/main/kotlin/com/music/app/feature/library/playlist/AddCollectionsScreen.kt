@@ -1,0 +1,269 @@
+package com.music.app.feature.library.playlist
+
+import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.data.LibraryContent
+import com.music.app.core.data.itemsOrEmpty
+import com.music.app.core.designsystem.component.SelectionState
+import com.music.app.core.designsystem.component.MusicTabRow
+import com.music.app.core.designsystem.component.rememberSelectionState
+import com.music.app.core.designsystem.icon.MusicIcons
+import com.music.app.core.designsystem.theme.MusicComponentStyle
+import com.music.app.core.model.Album
+import com.music.app.core.model.Artist
+import com.music.app.core.model.Folder
+import com.music.app.core.model.Genre
+import com.music.app.core.model.Playlist
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.library.AlbumDetailScreen
+import com.music.app.feature.library.AlbumRow
+import com.music.app.feature.library.ArtistDetailScreen
+import com.music.app.feature.library.ArtistRow
+import com.music.app.feature.library.FolderDetailScreen
+import com.music.app.feature.library.FolderRow
+import com.music.app.feature.library.GenreDetailScreen
+import com.music.app.feature.library.GenreRow
+import com.music.app.feature.library.LibraryList
+import com.music.app.feature.library.LibraryPlayback
+import com.music.app.feature.library.PlaylistDetailScreen
+import com.music.app.feature.library.PlaylistRow
+import com.music.app.feature.library.R
+import com.music.app.feature.library.filterItems
+import com.music.app.feature.library.options.OptionsAction
+import com.music.app.feature.library.options.label
+import com.music.app.feature.library.rowKey
+import com.music.app.feature.library.options.OptionsSheet
+import com.music.app.feature.library.options.OptionsTarget
+import com.music.app.feature.library.searchEmptyMessage
+import com.music.app.feature.library.searchedFor
+import com.music.app.feature.library.whileNotSearched
+import com.music.app.feature.library.selection.SelectionKey
+import kotlinx.coroutines.launch
+
+/** The kinds of collection a playlist can take tracks from, in the library's own tab order. */
+private enum class CollectionTab(@StringRes val labelRes: Int) {
+    ARTISTS(R.string.library_artists_title),
+    ALBUMS(R.string.library_albums_title),
+    GENRES(R.string.library_genres_title),
+    FOLDERS(R.string.library_folders_title),
+    PLAYLISTS(R.string.playlists_title),
+}
+
+/** Every tab's rows as they stand on screen - narrowed by the search, and without the playlist being added to. */
+private class VisibleCollections(
+    val artists: LibraryContent<Artist>,
+    val albums: LibraryContent<Album>,
+    val genres: LibraryContent<Genre>,
+    val folders: LibraryContent<Folder>,
+    val playlists: LibraryContent<Playlist>,
+    /** The section each tab's rows sit in, as their library tab sorts them - what its fast scroller names. */
+    val artistSections: ((Artist) -> String?)?,
+    val albumSections: ((Album) -> String?)?,
+    val genreSections: ((Genre) -> String?)?,
+    val folderSections: ((Folder) -> String?)?,
+) {
+    /** The keys of [tab]'s rows that can be picked - what its Select all selects. */
+    fun selectableKeys(tab: CollectionTab): List<SelectionKey> = when (tab) {
+        CollectionTab.ARTISTS -> artists.itemsOrEmpty.filter { it.trackCount > 0 }.map { SelectionKey.Artist(it.id) }
+        CollectionTab.ALBUMS -> albums.itemsOrEmpty.map { SelectionKey.Album(it.id) }
+        CollectionTab.GENRES -> genres.itemsOrEmpty.map { SelectionKey.Genre(it.id) }
+        CollectionTab.FOLDERS -> folders.itemsOrEmpty.map { SelectionKey.Folder(it.path, it.isVideo) }
+        CollectionTab.PLAYLISTS -> playlists.itemsOrEmpty.filter { it.trackCount > 0 }.map { SelectionKey.Playlist(it.id) }
+    }
+}
+
+/**
+ * Picking whole collections - artists, albums, genres, folders and other playlists - to add every one
+ * of their tracks to the playlist [playlistId].
+ *
+ * One selection runs across every tab, so an album and a genre can be gathered in a single add, and one
+ * search narrows every tab by name. Select all works on the tab on screen. The playlist being added to
+ * is not offered, and a collection holding no tracks cannot be picked.
+ */
+data class AddCollectionsScreen(val playlistId: Long) : Screen {
+
+    @Composable
+    override fun Content() {
+        val viewModel: PlaylistPickerViewModel = hiltViewModel()
+        val artists by viewModel.artists.collectAsStateWithLifecycle()
+        val albums by viewModel.albums.collectAsStateWithLifecycle()
+        val genres by viewModel.genres.collectAsStateWithLifecycle()
+        val folders by viewModel.folders.collectAsStateWithLifecycle()
+        val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+        val playback by viewModel.playback.collectAsStateWithLifecycle()
+        val artistSections by viewModel.artistSections.collectAsStateWithLifecycle()
+        val albumSections by viewModel.albumSections.collectAsStateWithLifecycle()
+        val genreSections by viewModel.genreSections.collectAsStateWithLifecycle()
+        val folderSections by viewModel.folderSections.collectAsStateWithLifecycle()
+        val selection = rememberSelectionState()
+        var searchQuery by remember { mutableStateOf<String?>(null) }
+        val pagerState = rememberPagerState(pageCount = { CollectionTab.entries.size })
+        val scope = rememberCoroutineScope()
+        var optionsTarget by remember { mutableStateOf<OptionsTarget?>(null) }
+
+        val visible = VisibleCollections(
+            artists = artists.searchedFor(searchQuery) { listOf(it.name) },
+            albums = albums.searchedFor(searchQuery) { listOf(it.title, it.artistName) },
+            genres = genres.searchedFor(searchQuery) { listOf(it.name) },
+            folders = folders.searchedFor(searchQuery) { listOf(it.name) },
+            playlists = playlists.filterItems { it.id != playlistId }.searchedFor(searchQuery) { listOf(it.name) },
+            artistSections = artistSections.whileNotSearched(searchQuery),
+            albumSections = albumSections.whileNotSearched(searchQuery),
+            genreSections = genreSections.whileNotSearched(searchQuery),
+            folderSections = folderSections.whileNotSearched(searchQuery),
+        )
+
+        PlaylistTrackPicker(
+            title = OptionsAction.ADD_COLLECTIONS.label,
+            destination = PickDestination.Playlist(playlistId),
+            selection = selection,
+            searchQuery = searchQuery,
+            onSearchQueryChange = { searchQuery = it },
+            visibleKeys = { visible.selectableKeys(CollectionTab.entries[pagerState.currentPage]) },
+            tabs = {
+                MusicTabRow(
+                    tabTitles = CollectionTab.entries.map { stringResource(it.labelRes) },
+                    selectedPosition = { pagerState.currentPage + pagerState.currentPageOffsetFraction },
+                    onTabClick = { page -> scope.launch { pagerState.animateScrollToPage(page) } },
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    edgePadding = MusicComponentStyle.ContentHorizontalPadding,
+                )
+            },
+        ) {
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                // Every tab kept composed, so a list keeps its place while another tab is on screen.
+                beyondViewportPageCount = CollectionTab.entries.size - 1,
+            ) { page ->
+                CollectionPage(
+                    tab = CollectionTab.entries[page],
+                    visible = visible,
+                    selection = selection,
+                    playback = { playback },
+                    emptyMessage = searchEmptyMessage(searchQuery),
+                    onOpenOptions = { optionsTarget = it },
+                )
+            }
+        }
+
+        optionsTarget?.let { target ->
+            OptionsSheet(target = target, onDismissRequest = { optionsTarget = null })
+        }
+    }
+}
+
+@Composable
+private fun CollectionPage(
+    tab: CollectionTab,
+    visible: VisibleCollections,
+    selection: SelectionState,
+    playback: () -> LibraryPlayback,
+    emptyMessage: String,
+    onOpenOptions: (OptionsTarget) -> Unit,
+) {
+    val navigator = LocalNavigator.current
+    when (tab) {
+        CollectionTab.ARTISTS -> PickerList(visible.artists, selection, stringResource(R.string.library_no_artists_found), emptyMessage, key = { it.id }, visible.artistSections, isCurrent = { playback().marks(it) }, isPlaying = { playback().isPlaying }) { artist ->
+            ArtistRow(
+                artist = artist,
+                selection = selection,
+                isCurrent = { playback().marks(artist) },
+                isPlaying = { playback().isPlaying },
+                onClick = { navigator.go(ArtistDetailScreen(artist.id)) },
+                onOpenOptions = { onOpenOptions(OptionsTarget.ForArtist(artist)) },
+            )
+        }
+
+        CollectionTab.ALBUMS -> PickerList(visible.albums, selection, stringResource(R.string.library_no_albums_found), emptyMessage, key = { it.id }, visible.albumSections, isCurrent = { playback().marks(it) }, isPlaying = { playback().isPlaying }) { album ->
+            AlbumRow(
+                album = album,
+                selection = selection,
+                isCurrent = { playback().marks(album) },
+                isPlaying = { playback().isPlaying },
+                onClick = { navigator.go(AlbumDetailScreen(album.id)) },
+                onOpenOptions = { onOpenOptions(OptionsTarget.ForAlbum(album)) },
+            )
+        }
+
+        CollectionTab.GENRES -> PickerList(visible.genres, selection, stringResource(R.string.library_no_genres_found), emptyMessage, key = { it.id }, visible.genreSections, isCurrent = { playback().marks(it) }, isPlaying = { playback().isPlaying }) { genre ->
+            GenreRow(
+                genre = genre,
+                selection = selection,
+                isCurrent = { playback().marks(genre) },
+                isPlaying = { playback().isPlaying },
+                onClick = { navigator.go(GenreDetailScreen(genre.id)) },
+                onOpenOptions = { onOpenOptions(OptionsTarget.ForGenre(genre)) },
+            )
+        }
+
+        CollectionTab.FOLDERS -> PickerList(visible.folders, selection, stringResource(R.string.library_no_folders_found), emptyMessage, key = { it.rowKey }, visible.folderSections, isCurrent = { playback().marks(it) }, isPlaying = { playback().isPlaying }) { folder ->
+            FolderRow(
+                folder = folder,
+                selection = selection,
+                isCurrent = { playback().marks(folder) },
+                isPlaying = { playback().isPlaying },
+                onClick = { navigator.go(FolderDetailScreen(folder.path, folder.isVideo)) },
+                onOpenOptions = { onOpenOptions(OptionsTarget.ForFolder(folder)) },
+            )
+        }
+
+        CollectionTab.PLAYLISTS -> PickerList(visible.playlists, selection, stringResource(R.string.add_collections_no_other_playlists), emptyMessage, key = { it.id }, isCurrent = { playback().marks(it) }, isPlaying = { playback().isPlaying }) { playlist ->
+            PlaylistRow(
+                playlist = playlist,
+                selection = selection,
+                isCurrent = { playback().marks(playlist) },
+                isPlaying = { playback().isPlaying },
+                onClick = { navigator.go(PlaylistDetailScreen(playlist.id)) },
+                onOpenOptions = { onOpenOptions(OptionsTarget.ForPlaylist(playlist)) },
+            )
+        }
+    }
+}
+
+/** A picker tab's list, reached from a playlist - so the library has already loaded and been permitted. */
+@Composable
+private fun <T> PickerList(
+    content: LibraryContent<T>,
+    selection: SelectionState,
+    emptyTitle: String,
+    emptyMessage: String,
+    key: (T) -> Any,
+    sectionOf: ((T) -> String?)? = null,
+    isCurrent: ((T) -> Boolean)? = null,
+    isPlaying: () -> Boolean = { false },
+    row: @Composable (T) -> Unit,
+) {
+    LibraryList(
+        content = content,
+        selection = selection,
+        hasPermission = true,
+        isScanning = false,
+        emptyTitle = emptyTitle,
+        emptyMessage = emptyMessage,
+        key = key,
+        modifier = Modifier.fillMaxSize(),
+        sectionOf = sectionOf,
+        isCurrent = isCurrent,
+        isPlaying = isPlaying,
+        row = row,
+    )
+}

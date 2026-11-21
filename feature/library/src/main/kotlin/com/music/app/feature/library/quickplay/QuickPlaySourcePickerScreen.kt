@@ -1,0 +1,218 @@
+package com.music.app.feature.library.quickplay
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.data.LibraryContent
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.TopBarSearch
+import com.music.app.core.designsystem.component.rememberSelectionState
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.playbackParent
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.library.AlbumRow
+import com.music.app.feature.library.ArtistRow
+import com.music.app.feature.library.FolderRow
+import com.music.app.feature.library.GenreRow
+import com.music.app.feature.library.LibraryList
+import com.music.app.feature.library.PlaylistRow
+import com.music.app.feature.library.R
+import com.music.app.feature.library.filterItems
+import com.music.app.feature.library.searchEmptyMessage
+import com.music.app.feature.library.searchedFor
+import com.music.app.feature.library.whileNotSearched
+import com.music.app.core.designsystem.icon.MusicIcons
+
+/**
+ * Choosing which [kind] of collection quick play plays - opened from the settings once the kind is
+ * picked. The library's own rows, searchable, with the current source marked; a tap chooses that row and
+ * closes the screen. A collection holding no tracks cannot be chosen, as it would give nothing to play.
+ */
+data class QuickPlaySourcePickerScreen(val kind: QuickPlaySourceKind) : Screen {
+
+    @Composable
+    override fun Content() {
+        val navigator = LocalNavigator.current
+        val viewModel: QuickPlaySourcePickerViewModel = hiltViewModel()
+        val source by viewModel.source.collectAsStateWithLifecycle()
+        var searchQuery by rememberSaveable { mutableStateOf<String?>(null) }
+        val choose: (PlaybackParent) -> Unit = { parent ->
+            viewModel.choose(parent)
+            navigator.close()
+        }
+        val isSource: (PlaybackParent) -> Boolean = { it == source.parent }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            MusicTopAppBar(
+                title = kind.pickerTitle,
+                onNavigateBack = navigator::back,
+                actions = listOf(TopBarAction(label = stringResource(R.string.library_search), icon = MusicIcons.Search) { searchQuery = "" }),
+                search = searchQuery?.let { query ->
+                    TopBarSearch(
+                        query = query,
+                        onQueryChange = { searchQuery = it },
+                        onClose = { searchQuery = null },
+                    )
+                },
+            )
+            when (kind) {
+                QuickPlaySourceKind.PLAYLIST -> {
+                    val playlists by viewModel.playlists.collectAsStateWithLifecycle()
+                    PickerList(
+                        content = playlists.filterItems { it.trackCount > 0 }.searchedFor(searchQuery) { listOf(it.name) },
+                        emptyTitle = stringResource(R.string.playlists_none_found),
+                        searchQuery = searchQuery,
+                        key = { it.id },
+                    ) { playlist ->
+                        val parent = PlaybackParent.Playlist(playlist.id)
+                        PlaylistRow(
+                            playlist = playlist,
+                            selection = null,
+                            isCurrent = { isSource(parent) },
+                            isPlaying = { false },
+                            onClick = { choose(parent) },
+                            onOpenOptions = null,
+                        )
+                    }
+                }
+
+                QuickPlaySourceKind.ARTIST -> {
+                    val artists by viewModel.artists.collectAsStateWithLifecycle()
+                    val sections by viewModel.artistSections.collectAsStateWithLifecycle()
+                    PickerList(
+                        content = artists.filterItems { it.trackCount > 0 }.searchedFor(searchQuery) { listOf(it.name) },
+                        emptyTitle = stringResource(R.string.library_no_artists_found),
+                        searchQuery = searchQuery,
+                        key = { it.id },
+                        sectionOf = sections.whileNotSearched(searchQuery),
+                    ) { artist ->
+                        val parent = PlaybackParent.Artist(artist.id)
+                        ArtistRow(
+                            artist = artist,
+                            selection = null,
+                            isCurrent = { isSource(parent) },
+                            isPlaying = { false },
+                            onClick = { choose(parent) },
+                            onOpenOptions = null,
+                        )
+                    }
+                }
+
+                QuickPlaySourceKind.ALBUM -> {
+                    val albums by viewModel.albums.collectAsStateWithLifecycle()
+                    val sections by viewModel.albumSections.collectAsStateWithLifecycle()
+                    PickerList(
+                        content = albums.searchedFor(searchQuery) { listOf(it.title, it.artistName) },
+                        emptyTitle = stringResource(R.string.library_no_albums_found),
+                        searchQuery = searchQuery,
+                        key = { it.id },
+                        sectionOf = sections.whileNotSearched(searchQuery),
+                    ) { album ->
+                        val parent = PlaybackParent.Album(album.id)
+                        AlbumRow(
+                            album = album,
+                            selection = null,
+                            isCurrent = { isSource(parent) },
+                            isPlaying = { false },
+                            onClick = { choose(parent) },
+                            onOpenOptions = null,
+                        )
+                    }
+                }
+
+                QuickPlaySourceKind.GENRE -> {
+                    val genres by viewModel.genres.collectAsStateWithLifecycle()
+                    val sections by viewModel.genreSections.collectAsStateWithLifecycle()
+                    PickerList(
+                        content = genres.searchedFor(searchQuery) { listOf(it.name) },
+                        emptyTitle = stringResource(R.string.library_no_genres_found),
+                        searchQuery = searchQuery,
+                        key = { it.id },
+                        sectionOf = sections.whileNotSearched(searchQuery),
+                    ) { genre ->
+                        val parent = PlaybackParent.Genre(genre.id)
+                        GenreRow(
+                            genre = genre,
+                            selection = null,
+                            isCurrent = { isSource(parent) },
+                            isPlaying = { false },
+                            onClick = { choose(parent) },
+                            onOpenOptions = null,
+                        )
+                    }
+                }
+
+                QuickPlaySourceKind.FOLDER -> {
+                    val folders by viewModel.folders.collectAsStateWithLifecycle()
+                    val sections by viewModel.folderSections.collectAsStateWithLifecycle()
+                    PickerList(
+                        content = folders.searchedFor(searchQuery) { listOf(it.name) },
+                        emptyTitle = stringResource(R.string.library_no_folders_found),
+                        searchQuery = searchQuery,
+                        key = { it.path },
+                        sectionOf = sections.whileNotSearched(searchQuery),
+                    ) { folder ->
+                        val parent = folder.playbackParent
+                        FolderRow(
+                            folder = folder,
+                            selection = null,
+                            isCurrent = { isSource(parent) },
+                            isPlaying = { false },
+                            onClick = { choose(parent) },
+                            onOpenOptions = null,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private val QuickPlaySourceKind.pickerTitle: String
+    @Composable get() = stringResource(
+        when (this) {
+            QuickPlaySourceKind.PLAYLIST -> R.string.quick_play_choose_playlist
+            QuickPlaySourceKind.ARTIST -> R.string.quick_play_choose_artist
+            QuickPlaySourceKind.ALBUM -> R.string.quick_play_choose_album
+            QuickPlaySourceKind.GENRE -> R.string.quick_play_choose_genre
+            QuickPlaySourceKind.FOLDER -> R.string.quick_play_choose_folder
+        },
+    )
+
+/**
+ * A picker's list, reached from the settings - so the library has already loaded and been permitted.
+ * Its rows take no selection: a tap is the whole choice.
+ */
+@Composable
+private fun <T> PickerList(
+    content: LibraryContent<T>,
+    emptyTitle: String,
+    searchQuery: String?,
+    key: (T) -> Any,
+    sectionOf: ((T) -> String?)? = null,
+    row: @Composable (T) -> Unit,
+) {
+    LibraryList(
+        content = content,
+        selection = rememberSelectionState(),
+        hasPermission = true,
+        isScanning = false,
+        emptyTitle = emptyTitle,
+        emptyMessage = searchEmptyMessage(searchQuery),
+        key = key,
+        modifier = Modifier.fillMaxSize(),
+        sectionOf = sectionOf,
+        row = row,
+    )
+}
