@@ -1,0 +1,54 @@
+plugins {
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.compose)
+}
+
+android {
+    namespace = "com.music.app.core.designsystem"
+    compileSdk = 37
+
+    defaultConfig {
+        minSdk = 26
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation(project(":core:common"))
+    implementation(project(":core:model"))
+
+    implementation(platform(libs.androidx.compose.bom))
+    // MusicActivity is a FragmentActivity, which the system's biometric prompt is shown from.
+    api(libs.androidx.fragment)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.core)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.core.ktx)
+    // The base of MusicActivity, which every activity of the app is - so exposed to every module that has one.
+    api(libs.androidx.appcompat)
+    implementation(libs.coil.compose)
+    implementation(libs.kotlinx.coroutines.android)
+
+    testImplementation(libs.junit)
+
+    implementation(libs.androidx.palette)
+    implementation(libs.materialkolor)
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}

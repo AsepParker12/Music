@@ -1,0 +1,9 @@
+<resources>
+    <!-- The brand's gradient is the design system's - see music_mark.xml. -->
+
+    <!-- The widgets as the widget picker previews them: white over the brand's gradient. -->
+    <color name="widget_preview_content">#FFFFFFFF</color>
+    <color name="widget_preview_secondary">#CCFFFFFF</color>
+    <color name="widget_preview_track">#66FFFFFF</color>
+    <color name="widget_preview_cover">#33FFFFFF</color>
+</resources>

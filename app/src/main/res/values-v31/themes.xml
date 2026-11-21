@@ -1,0 +1,32 @@
+<resources>
+    <!--
+        Android's launch screen, on the dynamic-colour surface the app opens on by default: Music's mark
+        animating in the theme's colours - see ic_splash_anim - the moment the app is launched, before any
+        of it runs. The background is set explicitly so the system never works one out itself.
+    -->
+    <style name="Theme.Music.V31" parent="Theme.Material3.DynamicColors.DayNight.NoActionBar">
+        <item name="android:windowSplashScreenBackground">?attr/colorSurface</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_anim</item>
+        <item name="android:windowSplashScreenAnimationDuration">1000</item>
+    </style>
+
+    <!--
+        The launch screen where the app is set light or dark whatever the system is - see
+        MainActivity.keepSplashScreenInThemeMode. Android 13 and later.
+    -->
+    <style name="Theme.Music.Splash.Light" parent="Theme.Material3.DynamicColors.Light.NoActionBar">
+        <item name="android:windowSplashScreenBackground">?attr/colorSurface</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_anim</item>
+        <item name="android:windowSplashScreenAnimationDuration">1000</item>
+    </style>
+
+    <style name="Theme.Music.Splash.Dark" parent="Theme.Material3.DynamicColors.Dark.NoActionBar">
+        <item name="android:windowSplashScreenBackground">?attr/colorSurface</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_anim</item>
+        <item name="android:windowSplashScreenAnimationDuration">1000</item>
+    </style>
+
+    <style name="Theme.Music.Splash.Black" parent="Theme.Music.Splash.Dark">
+        <item name="android:windowSplashScreenBackground">@android:color/black</item>
+    </style>
+</resources>

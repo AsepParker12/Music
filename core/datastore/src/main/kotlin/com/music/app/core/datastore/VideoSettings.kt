@@ -1,0 +1,243 @@
+package com.music.app.core.datastore
+
+import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import com.music.app.core.common.di.ApplicationScope
+import com.music.app.core.model.RepeatMode
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+
+private val ASPECT = stringPreferencesKey("aspect")
+private val KEEP_ASPECT = booleanPreferencesKey("keep_aspect")
+private val MUTED = booleanPreferencesKey("muted")
+private val SHOW_CLOCK = booleanPreferencesKey("show_clock")
+private val SHOW_PROGRESS_LINE = booleanPreferencesKey("show_progress_line")
+private val RESUME = booleanPreferencesKey("resume")
+private val GESTURES = booleanPreferencesKey("gestures")
+private val REPEAT_MODE = stringPreferencesKey("repeat_mode")
+private val SHUFFLE_ENABLED = booleanPreferencesKey("shuffle_enabled")
+private val DOUBLE_TAP_SEEK = booleanPreferencesKey("double_tap_seek")
+private val DOUBLE_TAP_SEEK_SECONDS = intPreferencesKey("double_tap_seek_seconds")
+private val LONG_PRESS_SPEED_UP = booleanPreferencesKey("long_press_speed_up")
+private val LONG_PRESS_SPEED = floatPreferencesKey("long_press_speed")
+private val LONG_PRESS_VIBRATION = booleanPreferencesKey("long_press_vibration")
+private val ZOOM_PAN = booleanPreferencesKey("zoom_pan")
+private val SUBTITLES_ON = booleanPreferencesKey("subtitles_on")
+private val SUBTITLE_LANGUAGE = stringPreferencesKey("subtitle_language")
+private val AUDIO_LANGUAGE = stringPreferencesKey("audio_language")
+private val SUBTITLE_CUSTOMIZATION = booleanPreferencesKey("subtitle_customization")
+private val SUBTITLE_TEXT_SIZE = stringPreferencesKey("subtitle_text_size")
+private val SUBTITLE_BACKDROP = stringPreferencesKey("subtitle_backdrop")
+private val SUBTITLE_POSITION = stringPreferencesKey("subtitle_position")
+private val SUBTITLE_FONT = stringPreferencesKey("subtitle_font")
+private val SUBTITLE_FONT_URI = stringPreferencesKey("subtitle_font_uri")
+private val SUBTITLE_FONT_NAME = stringPreferencesKey("subtitle_font_name")
+
+/** How the video player behaves - PLAYit's Video settings. */
+@Singleton
+class VideoSettings @Inject constructor(
+    @ApplicationContext context: Context,
+    @ApplicationScope scope: CoroutineScope,
+) {
+
+    private val dataStore = context.videoDataStore
+    private val cache = PreferencesCache(dataStore, scope)
+
+    internal suspend fun awaitLoaded() = cache.awaitLoaded()
+
+    /** How a video is fitted to the screen as it opens. */
+    val aspect: Setting<VideoAspect> = cache.setting { it.enum(ASPECT, VideoAspect.Default) }
+
+    suspend fun setAspect(aspect: VideoAspect) {
+        dataStore.edit { it[ASPECT] = aspect.name }
+    }
+
+    /**
+     * Whether the aspect button's choice becomes [aspect], so every video is fitted as the last was - on until the
+     * user would rather each open fitted to the screen.
+     */
+    val keepAspect: Setting<Boolean> = cache.setting { it[KEEP_ASPECT] ?: true }
+
+    suspend fun setKeepAspect(enabled: Boolean) {
+        dataStore.edit { it[KEEP_ASPECT] = enabled }
+    }
+
+    /** Whether videos play silenced - the mute button's choice, kept from one video to the next. */
+    val muted: Setting<Boolean> = cache.setting { it[MUTED] ?: false }
+
+    suspend fun setMuted(muted: Boolean) {
+        dataStore.edit { it[MUTED] = muted }
+    }
+
+    /** Whether the time and battery level stay on screen while the controls are hidden. */
+    val showClock: Setting<Boolean> = cache.setting { it[SHOW_CLOCK] ?: false }
+
+    suspend fun setShowClock(enabled: Boolean) {
+        dataStore.edit { it[SHOW_CLOCK] = enabled }
+    }
+
+    /** Whether a hairline along the foot of the screen says how far the video is while the controls are hidden. */
+    val showProgressLine: Setting<Boolean> = cache.setting { it[SHOW_PROGRESS_LINE] ?: false }
+
+    suspend fun setShowProgressLine(enabled: Boolean) {
+        dataStore.edit { it[SHOW_PROGRESS_LINE] = enabled }
+    }
+
+    /** Whether a video carries on from where it was left, rather than from its start. */
+    val resume: Setting<Boolean> = cache.setting { it[RESUME] ?: true }
+
+    suspend fun setResume(enabled: Boolean) {
+        dataStore.edit { it[RESUME] = enabled }
+    }
+
+    /** Whether dragging over the video seeks, and changes the brightness and the volume. */
+    val gestures: Setting<Boolean> = cache.setting { it[GESTURES] ?: true }
+
+    suspend fun setGestures(enabled: Boolean) {
+        dataStore.edit { it[GESTURES] = enabled }
+    }
+
+    /** How the videos repeat - the videos' own, apart from the music's, from the same modes. */
+    val repeatMode: Setting<RepeatMode> = cache.setting { it.enum(REPEAT_MODE, RepeatMode.OFF) }
+
+    /**
+     * Moves the videos' repeat mode one step along the repeat button's cycle - stopping after the current video one of its
+     * steps where [stopAfterCurrentEnabled], as the music's repeat button has it.
+     */
+    suspend fun cycleRepeatMode(stopAfterCurrentEnabled: Boolean) {
+        dataStore.edit { it[REPEAT_MODE] = it.enum(REPEAT_MODE, RepeatMode.OFF).next(stopAfterCurrentEnabled).name }
+    }
+
+    /** Whether the videos are watched shuffled - the videos' own, apart from the music's. */
+    val shuffleEnabled: Setting<Boolean> = cache.setting { it[SHUFFLE_ENABLED] ?: false }
+
+    suspend fun setShuffleEnabled(enabled: Boolean) {
+        dataStore.edit { it[SHUFFLE_ENABLED] = enabled }
+    }
+
+    /**
+     * Whether a double tap on either side of the video seeks back or forward [doubleTapSeekSeconds], and one in the
+     * middle pauses or plays it.
+     */
+    val doubleTapSeek: Setting<Boolean> = cache.setting { it[DOUBLE_TAP_SEEK] ?: true }
+
+    suspend fun setDoubleTapSeek(enabled: Boolean) {
+        dataStore.edit { it[DOUBLE_TAP_SEEK] = enabled }
+    }
+
+    val doubleTapSeekSeconds: Setting<Int> = cache.setting { it[DOUBLE_TAP_SEEK_SECONDS] ?: DOUBLE_TAP_SEEK_SECONDS_DEFAULT }
+
+    suspend fun setDoubleTapSeekSeconds(seconds: Int) {
+        dataStore.edit { it[DOUBLE_TAP_SEEK_SECONDS] = seconds }
+    }
+
+    /** Whether holding a finger on the video plays it at [longPressSpeed] until it lifts. */
+    val longPressSpeedUp: Setting<Boolean> = cache.setting { it[LONG_PRESS_SPEED_UP] ?: true }
+
+    suspend fun setLongPressSpeedUp(enabled: Boolean) {
+        dataStore.edit { it[LONG_PRESS_SPEED_UP] = enabled }
+    }
+
+    val longPressSpeed: Setting<Float> = cache.setting { it[LONG_PRESS_SPEED] ?: LONG_PRESS_SPEED_DEFAULT }
+
+    suspend fun setLongPressSpeed(speed: Float) {
+        dataStore.edit { it[LONG_PRESS_SPEED] = speed }
+    }
+
+    /** Whether the device vibrates as a long press speeds the video up. */
+    val longPressVibration: Setting<Boolean> = cache.setting { it[LONG_PRESS_VIBRATION] ?: true }
+
+    suspend fun setLongPressVibration(enabled: Boolean) {
+        dataStore.edit { it[LONG_PRESS_VIBRATION] = enabled }
+    }
+
+    /** Whether two fingers zoom the video, and pan it while it is enlarged. */
+    val zoomPan: Setting<Boolean> = cache.setting { it[ZOOM_PAN] ?: true }
+
+    suspend fun setZoomPan(enabled: Boolean) {
+        dataStore.edit { it[ZOOM_PAN] = enabled }
+    }
+
+    /** Whether a video shows subtitles unasked - the last choice made in the player, so a series carries on as it was. */
+    val subtitlesOn: Setting<Boolean> = cache.setting { it[SUBTITLES_ON] ?: true }
+
+    suspend fun setSubtitlesOn(enabled: Boolean) {
+        dataStore.edit { it[SUBTITLES_ON] = enabled }
+    }
+
+    /** The language of the subtitles last chosen, which the next video's are looked for in. */
+    val subtitleLanguage: Setting<String?> = cache.setting { it[SUBTITLE_LANGUAGE] }
+
+    suspend fun setSubtitleLanguage(language: String) {
+        dataStore.edit { it[SUBTITLE_LANGUAGE] = language }
+    }
+
+    /** The language of the audio track last chosen, which the next video plays in where it can. */
+    val audioLanguage: Setting<String?> = cache.setting { it[AUDIO_LANGUAGE] }
+
+    suspend fun setAudioLanguage(language: String) {
+        dataStore.edit { it[AUDIO_LANGUAGE] = language }
+    }
+
+    /** Whether subtitles are drawn as the settings below say, rather than as the device's caption settings do. */
+    val subtitleCustomization: Setting<Boolean> = cache.setting { it[SUBTITLE_CUSTOMIZATION] ?: true }
+
+    suspend fun setSubtitleCustomization(enabled: Boolean) {
+        dataStore.edit { it[SUBTITLE_CUSTOMIZATION] = enabled }
+    }
+
+    val subtitleTextSize: Setting<SubtitleTextSize> = cache.setting { it.enum(SUBTITLE_TEXT_SIZE, SubtitleTextSize.Default) }
+
+    suspend fun setSubtitleTextSize(size: SubtitleTextSize) {
+        dataStore.edit { it[SUBTITLE_TEXT_SIZE] = size.name }
+    }
+
+    val subtitleBackdrop: Setting<SubtitleBackdrop> = cache.setting { it.enum(SUBTITLE_BACKDROP, SubtitleBackdrop.Default) }
+
+    suspend fun setSubtitleBackdrop(backdrop: SubtitleBackdrop) {
+        dataStore.edit { it[SUBTITLE_BACKDROP] = backdrop.name }
+    }
+
+    val subtitlePosition: Setting<SubtitlePosition> = cache.setting { it.enum(SUBTITLE_POSITION, SubtitlePosition.Default) }
+
+    suspend fun setSubtitlePosition(position: SubtitlePosition) {
+        dataStore.edit { it[SUBTITLE_POSITION] = position.name }
+    }
+
+    val subtitleFont: Setting<SubtitleFont> = cache.setting { it.enum(SUBTITLE_FONT, SubtitleFont.Default) }
+
+    suspend fun setSubtitleFont(font: SubtitleFont) {
+        dataStore.edit { it[SUBTITLE_FONT] = font.name }
+    }
+
+    /** The font picked from the device for [SubtitleFont.CUSTOM] - null until one is. */
+    val subtitleCustomFont: Setting<CustomFont?> = cache.setting { preferences ->
+        preferences[SUBTITLE_FONT_URI]?.let { CustomFont(uri = it, name = preferences[SUBTITLE_FONT_NAME].orEmpty()) }
+    }
+
+    /** Stores [font] and makes it the subtitles' font, in one edit, so they are never set in a custom font without one. */
+    suspend fun setSubtitleCustomFont(font: CustomFont) {
+        dataStore.edit {
+            it[SUBTITLE_FONT_URI] = font.uri
+            it[SUBTITLE_FONT_NAME] = font.name
+            it[SUBTITLE_FONT] = SubtitleFont.CUSTOM.name
+        }
+    }
+
+    companion object {
+        /** The seek lengths a double tap may be set to, in seconds. */
+        val DoubleTapSeekSecondsChoices = listOf(5, 10, 15, 20, 30)
+
+        /** The speeds a long press may be set to play at. */
+        val LongPressSpeedChoices = listOf(1.5f, 2f, 2.5f, 3f)
+
+        private const val DOUBLE_TAP_SEEK_SECONDS_DEFAULT = 10
+        private const val LONG_PRESS_SPEED_DEFAULT = 2f
+    }
+}

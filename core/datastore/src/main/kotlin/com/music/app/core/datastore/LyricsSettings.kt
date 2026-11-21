@@ -1,0 +1,143 @@
+package com.music.app.core.datastore
+
+import android.content.Context
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
+import com.music.app.core.common.di.ApplicationScope
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+
+private val LYRICS_CLICK = booleanPreferencesKey("lyricsClick")
+private val LYRICS_SCROLL = booleanPreferencesKey("lyricsScrollKey")
+private val LYRICS_TEXT_SIZE = floatPreferencesKey("lyricsTextSize")
+private val LYRICS_LINE_SPACING = floatPreferencesKey("lyricsLineSpacing")
+private val LYRICS_LINE_BLUR = booleanPreferencesKey("lyricsLineBlur")
+private val SHOW_LYRICS_PLAYER_CONTROLS = booleanPreferencesKey("showLyricsPlayerControls")
+private val LYRICS_V2_BOUNCE_FACTOR = floatPreferencesKey("lyricsV2BounceFactor")
+private val LYRICS_V2_GLOW_FACTOR = floatPreferencesKey("lyricsV2GlowFactor")
+private val LYRICS_V2_FILL_TRANSITION_WIDTH = floatPreferencesKey("lyricsV2FillTransitionWidth")
+private val LYRICS_V2_LRC_BOUNCE_ENABLED = booleanPreferencesKey("lyricsV2LrcBounceEnabled")
+private val LYRICS_ROMANIZE_ARABIC = booleanPreferencesKey("lyricsRomanizeArabic")
+private val LYRICS_ROMANIZE_JAPANESE = booleanPreferencesKey("lyricsRomanizeJapanese")
+private val LYRICS_ROMANIZE_KOREAN = booleanPreferencesKey("lyricsRomanizeKorean")
+private val LYRICS_ROMANIZE_CHINESE = booleanPreferencesKey("lyricsRomanizeChinese")
+private val LYRICS_ROMANIZE_HINDI = booleanPreferencesKey("lyricsRomanizeHindi")
+private val LYRICS_ROMANIZE_OTHER_LANGUAGES = booleanPreferencesKey("lyricsRomanizeOtherLanguages")
+private val LYRICS_SHOWS_ROMANIZATION_ONLY = booleanPreferencesKey("lyricsShowsRomanizationOnly")
+private val FIND_MISSING_LYRICS = booleanPreferencesKey("find_missing_lyrics")
+private val LYRICS_EDITOR_FOLLOWS_PLAYBACK = booleanPreferencesKey("lyrics_editor_follows_playback")
+
+/**
+ * How lyrics look and behave (ported from ArchiveTune's lyrics preferences, under the same keys and
+ * defaults). The V2 renderer is the only one Music has, so ArchiveTune's lyrics mode is not stored.
+ */
+@Singleton
+class LyricsSettings @Inject constructor(
+    @ApplicationContext context: Context,
+    @ApplicationScope scope: CoroutineScope,
+) {
+
+    private val dataStore = context.lyricsDataStore
+    private val cache = PreferencesCache(dataStore, scope)
+
+    internal suspend fun awaitLoaded() = cache.awaitLoaded()
+
+    private suspend fun <T> set(key: Preferences.Key<T>, value: T) {
+        dataStore.edit { it[key] = value }
+    }
+
+    /** Tapping a synced line seeks to it. */
+    val lyricsClick: Setting<Boolean> = cache.setting { it[LYRICS_CLICK] ?: true }
+
+    suspend fun setLyricsClick(enabled: Boolean) = set(LYRICS_CLICK, enabled)
+
+    val lyricsScroll: Setting<Boolean> = cache.setting { it[LYRICS_SCROLL] ?: true }
+
+    suspend fun setLyricsScroll(enabled: Boolean) = set(LYRICS_SCROLL, enabled)
+
+    /** In sp. */
+    val lyricsTextSize: Setting<Float> = cache.setting { it[LYRICS_TEXT_SIZE] ?: 26f }
+
+    suspend fun setLyricsTextSize(size: Float) = set(LYRICS_TEXT_SIZE, size)
+
+    /** A multiple of the text size. */
+    val lyricsLineSpacing: Setting<Float> = cache.setting { it[LYRICS_LINE_SPACING] ?: 1.3f }
+
+    suspend fun setLyricsLineSpacing(spacing: Float) = set(LYRICS_LINE_SPACING, spacing)
+
+    val lyricsLineBlur: Setting<Boolean> = cache.setting { it[LYRICS_LINE_BLUR] ?: true }
+
+    suspend fun setLyricsLineBlur(enabled: Boolean) = set(LYRICS_LINE_BLUR, enabled)
+
+    val showLyricsPlayerControls: Setting<Boolean> = cache.setting { it[SHOW_LYRICS_PLAYER_CONTROLS] ?: true }
+
+    suspend fun setShowLyricsPlayerControls(enabled: Boolean) = set(SHOW_LYRICS_PLAYER_CONTROLS, enabled)
+
+    /** How far a sung word lifts, from 0 to 2 times the default. */
+    val bounceFactor: Setting<Float> = cache.setting { it[LYRICS_V2_BOUNCE_FACTOR] ?: 1f }
+
+    suspend fun setBounceFactor(factor: Float) = set(LYRICS_V2_BOUNCE_FACTOR, factor)
+
+    /** How brightly a sung word glows, from 0 to 2 times the default. */
+    val glowFactor: Setting<Float> = cache.setting { it[LYRICS_V2_GLOW_FACTOR] ?: 1f }
+
+    suspend fun setGlowFactor(factor: Float) = set(LYRICS_V2_GLOW_FACTOR, factor)
+
+    /** The width, in dp, of the soft edge the fill sweeps across a word with. */
+    val fillTransitionWidth: Setting<Float> = cache.setting { it[LYRICS_V2_FILL_TRANSITION_WIDTH] ?: 8f }
+
+    suspend fun setFillTransitionWidth(width: Float) = set(LYRICS_V2_FILL_TRANSITION_WIDTH, width)
+
+    /** Whether line-synced lyrics bounce word by word as each line starts. */
+    val lrcBounceEnabled: Setting<Boolean> = cache.setting { it[LYRICS_V2_LRC_BOUNCE_ENABLED] ?: true }
+
+    suspend fun setLrcBounceEnabled(enabled: Boolean) = set(LYRICS_V2_LRC_BOUNCE_ENABLED, enabled)
+
+    /** Whether lyrics in the Arabic script are romanized. */
+    val romanizeArabic: Setting<Boolean> = cache.setting { it[LYRICS_ROMANIZE_ARABIC] ?: true }
+
+    suspend fun setRomanizeArabic(enabled: Boolean) = set(LYRICS_ROMANIZE_ARABIC, enabled)
+
+    /** Whether Japanese is romanized - which it can be only once its dictionary is downloaded. */
+    val romanizeJapanese: Setting<Boolean> = cache.setting { it[LYRICS_ROMANIZE_JAPANESE] ?: true }
+
+    suspend fun setRomanizeJapanese(enabled: Boolean) = set(LYRICS_ROMANIZE_JAPANESE, enabled)
+
+    val romanizeKorean: Setting<Boolean> = cache.setting { it[LYRICS_ROMANIZE_KOREAN] ?: true }
+
+    suspend fun setRomanizeKorean(enabled: Boolean) = set(LYRICS_ROMANIZE_KOREAN, enabled)
+
+    val romanizeChinese: Setting<Boolean> = cache.setting { it[LYRICS_ROMANIZE_CHINESE] ?: true }
+
+    suspend fun setRomanizeChinese(enabled: Boolean) = set(LYRICS_ROMANIZE_CHINESE, enabled)
+
+    val romanizeHindi: Setting<Boolean> = cache.setting { it[LYRICS_ROMANIZE_HINDI] ?: true }
+
+    suspend fun setRomanizeHindi(enabled: Boolean) = set(LYRICS_ROMANIZE_HINDI, enabled)
+
+    val romanizeOtherLanguages: Setting<Boolean> = cache.setting { it[LYRICS_ROMANIZE_OTHER_LANGUAGES] ?: true }
+
+    suspend fun setRomanizeOtherLanguages(enabled: Boolean) = set(LYRICS_ROMANIZE_OTHER_LANGUAGES, enabled)
+
+    /** Whether a romanized line shows its romanization alone, in place of the original rather than over it. */
+    val showsRomanizationOnly: Setting<Boolean> = cache.setting { it[LYRICS_SHOWS_ROMANIZATION_ONLY] ?: false }
+
+    suspend fun setShowsRomanizationOnly(enabled: Boolean) = set(LYRICS_SHOWS_ROMANIZATION_ONLY, enabled)
+
+    /**
+     * Whether the playing track, and the ones either side of it in the queue, have lyrics looked for on the web
+     * when their files hold none - the best found written into them.
+     */
+    val findMissingLyrics: Setting<Boolean> = cache.setting { it[FIND_MISSING_LYRICS] ?: true }
+
+    suspend fun setFindMissingLyrics(enabled: Boolean) = set(FIND_MISSING_LYRICS, enabled)
+
+    /** Whether the lyrics editor's list follows the line the player is on - kept, so it opens as it was left. */
+    val lyricsEditorFollowsPlayback: Setting<Boolean> = cache.setting { it[LYRICS_EDITOR_FOLLOWS_PLAYBACK] ?: true }
+
+    suspend fun setLyricsEditorFollowsPlayback(enabled: Boolean) = set(LYRICS_EDITOR_FOLLOWS_PLAYBACK, enabled)
+}

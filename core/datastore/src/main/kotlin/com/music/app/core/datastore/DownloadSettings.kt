@@ -1,0 +1,283 @@
+package com.music.app.core.datastore
+
+import android.content.Context
+import androidx.datastore.preferences.core.MutablePreferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import com.music.app.core.common.di.ApplicationScope
+import com.music.app.core.model.BrowserBookmark
+import com.music.app.core.model.DownloadChoices
+import com.music.app.core.model.DownloaderPreferences
+import com.music.app.core.model.SponsorSegment
+import com.music.app.core.model.TranscriptionService
+import com.music.app.core.model.UpdateInterval
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import org.json.JSONArray
+import org.json.JSONObject
+import com.music.app.core.model.SearchEngine
+import com.music.app.core.model.ShieldsPreferences
+
+private val KIND = stringPreferencesKey("download_kind")
+/** The browser's bookmarks, as a JSON array of `{url, title}`, in the order they were added. */
+private val BROWSER_BOOKMARKS = stringPreferencesKey("browser_bookmarks")
+private val BROWSER_SEARCH_ENGINE = stringPreferencesKey("browser_search_engine")
+private val SHIELDS_AD_BLOCK = stringPreferencesKey("browser_shields_ad_block")
+private val SHIELDS_HTTPS_UPGRADE = stringPreferencesKey("browser_shields_https_upgrade")
+private val SHIELDS_BLOCK_SCRIPTS = booleanPreferencesKey("browser_shields_block_scripts")
+private val SHIELDS_FINGERPRINTING = stringPreferencesKey("browser_shields_fingerprinting")
+private val SHIELDS_COOKIES = stringPreferencesKey("browser_shields_cookies")
+private val SHIELDS_FORGET_ON_CLOSE = booleanPreferencesKey("browser_shields_forget_on_close")
+private val SHIELDS_REDUCE_LANGUAGE = booleanPreferencesKey("browser_shields_reduce_language")
+private val SHIELDS_DE_AMP = booleanPreferencesKey("browser_shields_de_amp")
+private val SHIELDS_DEBOUNCE = booleanPreferencesKey("browser_shields_debounce")
+/** The sites, by eTLD+1, the browser's Shields are down on. */
+private val SHIELDS_DOWN_SITES = stringSetPreferencesKey("browser_shields_down_sites")
+/** The filter lists, by catalog id, turned on - and off - against the catalog's defaults. */
+private val SHIELDS_LISTS_ON = stringSetPreferencesKey("browser_shields_lists_on")
+private val SHIELDS_LISTS_OFF = stringSetPreferencesKey("browser_shields_lists_off")
+private val VIDEO_QUALITY = stringPreferencesKey("download_video_quality")
+private val VIDEO_FORMAT = stringPreferencesKey("download_video_format")
+private val AUDIO_FORMAT = stringPreferencesKey("download_audio_format")
+private val CAPTIONS = booleanPreferencesKey("download_captions")
+private val SKIP_SPONSORS = booleanPreferencesKey("download_skip_sponsors")
+private val AUDIO_LANGUAGE = stringPreferencesKey("download_audio_language")
+private val SUBTITLES_AS_FILE = booleanPreferencesKey("download_subtitles_as_file")
+private val SAVES_AS_SONG = booleanPreferencesKey("download_saves_as_song")
+private val SAVES_COVER = booleanPreferencesKey("download_saves_cover")
+
+private val DOWNLOADS_AT_ONCE = intPreferencesKey("download_at_once")
+private val WIFI_ONLY = booleanPreferencesKey("download_wifi_only")
+/** The one folder of Download both kinds were saved in before each had its own: what each starts from. */
+private val FOLDER_NAME = stringPreferencesKey("download_folder_name")
+/** The folder of Download each kind was saved in before any folder could be picked: what each starts from. */
+private val AUDIO_FOLDER_NAME = stringPreferencesKey("download_audio_folder")
+private val VIDEO_FOLDER_NAME = stringPreferencesKey("download_video_folder")
+private val AUDIO_FOLDER = stringPreferencesKey("download_audio_path")
+private val VIDEO_FOLDER = stringPreferencesKey("download_video_path")
+private val FILE_FOLDER = stringPreferencesKey("download_file_path")
+private val FILE_NAME_TEMPLATE = stringPreferencesKey("download_file_name_template")
+private val SPONSOR_SEGMENTS = stringSetPreferencesKey("download_sponsor_segments")
+private val PROXY = stringPreferencesKey("download_proxy")
+private val RATE_LIMIT = stringPreferencesKey("download_rate_limit")
+private val USES_COOKIES = booleanPreferencesKey("download_uses_cookies")
+private val USES_ARCHIVE = booleanPreferencesKey("download_uses_archive")
+private val SUPADATA_KEY = stringPreferencesKey("download_supadata_key")
+private val GROQ_KEY = stringPreferencesKey("download_groq_key")
+private val TRANSCRIPTION_SERVICE = stringPreferencesKey("download_transcription_service")
+private val USES_PROXY = booleanPreferencesKey("download_uses_proxy")
+private val LIMITS_RATE = booleanPreferencesKey("download_limits_rate")
+private val FORCES_IPV4 = booleanPreferencesKey("download_forces_ipv4")
+private val CONCURRENT_FRAGMENTS = intPreferencesKey("download_concurrent_fragments")
+private val SENDS_USER_AGENT = booleanPreferencesKey("download_sends_user_agent")
+private val USER_AGENT = stringPreferencesKey("download_user_agent")
+private val SAVES_THUMBNAIL = booleanPreferencesKey("download_saves_thumbnail")
+private val INCOGNITO = booleanPreferencesKey("download_incognito")
+private val HIDES_PREVIEW = booleanPreferencesKey("download_hides_preview")
+private val SHOWS_LIBRARY_BUTTON = booleanPreferencesKey("download_shows_library_button")
+private val YT_DLP_CHANNEL = stringPreferencesKey("download_yt_dlp_channel")
+/** How often yt-dlp updates itself - [NEVER] for not at all. */
+private val YT_DLP_AUTO_UPDATE = stringPreferencesKey("download_yt_dlp_auto_update")
+private const val NEVER = "NEVER"
+private val COMMAND_FOLDER = stringPreferencesKey("download_command_folder")
+private val SUBTITLE_LANGUAGES = stringPreferencesKey("download_subtitle_languages")
+private val SUBTITLE_FORMAT = stringPreferencesKey("download_subtitle_format")
+private val WRITES_AUTO_SUBTITLES = booleanPreferencesKey("download_writes_auto_subtitles")
+private val KEEPS_SUBTITLE_FILES = booleanPreferencesKey("download_keeps_subtitle_files")
+private val DISABLED_TRANSCRIPTION_SERVICES = stringSetPreferencesKey("download_disabled_transcription_services")
+
+/** How the user downloads - what a Quick download takes, and the download screen starts from - and how downloading works. */
+@Singleton
+class DownloadSettings @Inject constructor(
+    @ApplicationContext context: Context,
+    @ApplicationScope scope: CoroutineScope,
+) {
+    private val dataStore = context.downloadDataStore
+    private val cache = PreferencesCache(dataStore, scope)
+
+    internal suspend fun awaitLoaded() = cache.awaitLoaded()
+
+    val choices: Setting<DownloadChoices> = cache.setting { preferences ->
+        val defaults = DownloadChoices()
+        DownloadChoices(
+            kind = preferences.enum(KIND, defaults.kind),
+            videoQuality = preferences.enum(VIDEO_QUALITY, defaults.videoQuality),
+            videoFormat = preferences.enum(VIDEO_FORMAT, defaults.videoFormat),
+            audioFormat = preferences.enum(AUDIO_FORMAT, defaults.audioFormat),
+            captions = preferences[CAPTIONS] ?: defaults.captions,
+            skipSponsors = preferences[SKIP_SPONSORS] ?: defaults.skipSponsors,
+            audioLanguage = preferences[AUDIO_LANGUAGE] ?: defaults.audioLanguage,
+            subtitlesAsFile = preferences[SUBTITLES_AS_FILE] ?: defaults.subtitlesAsFile,
+            savesAsSong = preferences[SAVES_AS_SONG] ?: defaults.savesAsSong,
+            savesCover = preferences[SAVES_COVER] ?: defaults.savesCover,
+        )
+    }
+
+    val preferences: Setting<DownloaderPreferences> = cache.setting { preferences ->
+        val defaults = DownloaderPreferences()
+        DownloaderPreferences(
+            downloadsAtOnce = preferences[DOWNLOADS_AT_ONCE] ?: defaults.downloadsAtOnce,
+            wifiOnly = preferences[WIFI_ONLY] ?: defaults.wifiOnly,
+            audioFolder = preferences[AUDIO_FOLDER] ?: (preferences[AUDIO_FOLDER_NAME] ?: preferences[FOLDER_NAME])?.let(::inDownload) ?: defaults.audioFolder,
+            videoFolder = preferences[VIDEO_FOLDER] ?: (preferences[VIDEO_FOLDER_NAME] ?: preferences[FOLDER_NAME])?.let(::inDownload) ?: defaults.videoFolder,
+            fileFolder = preferences[FILE_FOLDER] ?: defaults.fileFolder,
+            fileNameTemplate = preferences[FILE_NAME_TEMPLATE] ?: defaults.fileNameTemplate,
+            sponsorSegments = preferences[SPONSOR_SEGMENTS]
+                ?.mapNotNull { id -> SponsorSegment.entries.firstOrNull { it.id == id } }?.toSet()
+                ?: defaults.sponsorSegments,
+            // A proxy or a limit given before either could be turned off is on.
+            usesProxy = preferences[USES_PROXY] ?: !preferences[PROXY].isNullOrBlank(),
+            proxy = preferences[PROXY] ?: defaults.proxy,
+            limitsRate = preferences[LIMITS_RATE] ?: !preferences[RATE_LIMIT].isNullOrBlank(),
+            // A limit never given - kept blank before there was a default - is the default.
+            rateLimit = preferences[RATE_LIMIT]?.takeIf(String::isNotBlank) ?: defaults.rateLimit,
+            forcesIpv4 = preferences[FORCES_IPV4] ?: defaults.forcesIpv4,
+            concurrentFragments = preferences[CONCURRENT_FRAGMENTS] ?: defaults.concurrentFragments,
+            usesCookies = preferences[USES_COOKIES] ?: defaults.usesCookies,
+            sendsUserAgent = preferences[SENDS_USER_AGENT] ?: defaults.sendsUserAgent,
+            userAgent = preferences[USER_AGENT] ?: defaults.userAgent,
+            commandFolder = preferences[COMMAND_FOLDER] ?: defaults.commandFolder,
+            subtitleLanguages = preferences[SUBTITLE_LANGUAGES] ?: defaults.subtitleLanguages,
+            subtitleFormat = preferences.enum(SUBTITLE_FORMAT, defaults.subtitleFormat),
+            writesAutoSubtitles = preferences[WRITES_AUTO_SUBTITLES] ?: defaults.writesAutoSubtitles,
+            keepsSubtitleFiles = preferences[KEEPS_SUBTITLE_FILES] ?: defaults.keepsSubtitleFiles,
+            disabledTranscriptionServices = preferences[DISABLED_TRANSCRIPTION_SERVICES]
+                ?.mapNotNull { name -> TranscriptionService.entries.firstOrNull { it.name == name } }?.toSet()
+                ?: defaults.disabledTranscriptionServices,
+            savesThumbnail = preferences[SAVES_THUMBNAIL] ?: defaults.savesThumbnail,
+            isIncognito = preferences[INCOGNITO] ?: defaults.isIncognito,
+            hidesPreview = preferences[HIDES_PREVIEW] ?: defaults.hidesPreview,
+            showsLibraryButton = preferences[SHOWS_LIBRARY_BUTTON] ?: defaults.showsLibraryButton,
+            ytDlpChannel = preferences.enum(YT_DLP_CHANNEL, defaults.ytDlpChannel),
+            ytDlpAutoUpdate = preferences[YT_DLP_AUTO_UPDATE]?.let { stored -> UpdateInterval.entries.firstOrNull { it.name == stored } }
+                ?: defaults.ytDlpAutoUpdate.takeIf { preferences[YT_DLP_AUTO_UPDATE] != NEVER },
+            usesArchive = preferences[USES_ARCHIVE] ?: defaults.usesArchive,
+            supadataKey = preferences[SUPADATA_KEY] ?: defaults.supadataKey,
+            groqKey = preferences[GROQ_KEY] ?: defaults.groqKey,
+            transcriptionService = preferences.enum(TRANSCRIPTION_SERVICE, defaults.transcriptionService),
+        )
+    }
+
+    /** The browser's bookmarks - see [BrowserBookmark] - the first added first. */
+    val browserBookmarks: Setting<List<BrowserBookmark>> = cache.setting { preferences ->
+        val array = preferences[BROWSER_BOOKMARKS]?.let { runCatching { JSONArray(it) }.getOrNull() } ?: return@setting emptyList()
+        List(array.length()) { array.optJSONObject(it) }.mapNotNull { item ->
+            item?.optString("url")?.takeIf(String::isNotEmpty)?.let { BrowserBookmark(it, item.optString("title")) }
+        }
+    }
+
+    /** What the browser searches with - see [SearchEngine]. */
+    val browserSearchEngine: Setting<SearchEngine> = cache.setting { it.enum(BROWSER_SEARCH_ENGINE, SearchEngine.Default) }
+
+    suspend fun setBrowserSearchEngine(engine: SearchEngine) {
+        dataStore.edit { it[BROWSER_SEARCH_ENGINE] = engine.name }
+    }
+
+    /** The browser's Shields and privacy - see [ShieldsPreferences]. */
+    val browserShields: Setting<ShieldsPreferences> = cache.setting { preferences ->
+        val defaults = ShieldsPreferences()
+        ShieldsPreferences(
+            adBlock = preferences.enum(SHIELDS_AD_BLOCK, defaults.adBlock),
+            httpsUpgrade = preferences.enum(SHIELDS_HTTPS_UPGRADE, defaults.httpsUpgrade),
+            blockScripts = preferences[SHIELDS_BLOCK_SCRIPTS] ?: defaults.blockScripts,
+            fingerprinting = preferences.enum(SHIELDS_FINGERPRINTING, defaults.fingerprinting),
+            cookies = preferences.enum(SHIELDS_COOKIES, defaults.cookies),
+            forgetOnClose = preferences[SHIELDS_FORGET_ON_CLOSE] ?: defaults.forgetOnClose,
+            reduceLanguage = preferences[SHIELDS_REDUCE_LANGUAGE] ?: defaults.reduceLanguage,
+            deAmp = preferences[SHIELDS_DE_AMP] ?: defaults.deAmp,
+            debounce = preferences[SHIELDS_DEBOUNCE] ?: defaults.debounce,
+            downSites = preferences[SHIELDS_DOWN_SITES] ?: defaults.downSites,
+            listsOn = preferences[SHIELDS_LISTS_ON] ?: defaults.listsOn,
+            listsOff = preferences[SHIELDS_LISTS_OFF] ?: defaults.listsOff,
+        )
+    }
+
+    /** Changes the Shields as [change] makes them from what they are. */
+    suspend fun updateShields(change: (ShieldsPreferences) -> ShieldsPreferences) {
+        dataStore.edit { preferences ->
+            val shields = change(browserShields.value)
+            preferences[SHIELDS_AD_BLOCK] = shields.adBlock.name
+            preferences[SHIELDS_HTTPS_UPGRADE] = shields.httpsUpgrade.name
+            preferences[SHIELDS_BLOCK_SCRIPTS] = shields.blockScripts
+            preferences[SHIELDS_FINGERPRINTING] = shields.fingerprinting.name
+            preferences[SHIELDS_COOKIES] = shields.cookies.name
+            preferences[SHIELDS_FORGET_ON_CLOSE] = shields.forgetOnClose
+            preferences[SHIELDS_REDUCE_LANGUAGE] = shields.reduceLanguage
+            preferences[SHIELDS_DE_AMP] = shields.deAmp
+            preferences[SHIELDS_DEBOUNCE] = shields.debounce
+            preferences[SHIELDS_DOWN_SITES] = shields.downSites
+            preferences[SHIELDS_LISTS_ON] = shields.listsOn
+            preferences[SHIELDS_LISTS_OFF] = shields.listsOff
+        }
+    }
+
+    /** Keeps [bookmarks] as the browser's, in place of what it had. */
+    suspend fun setBrowserBookmarks(bookmarks: List<BrowserBookmark>) {
+        dataStore.edit { preferences ->
+            preferences[BROWSER_BOOKMARKS] = JSONArray(bookmarks.map { JSONObject().put("url", it.url).put("title", it.title) }).toString()
+        }
+    }
+
+    suspend fun setChoices(choices: DownloadChoices) {
+        dataStore.edit {
+            it[KIND] = choices.kind.name
+            it[VIDEO_QUALITY] = choices.videoQuality.name
+            it[VIDEO_FORMAT] = choices.videoFormat.name
+            it[AUDIO_FORMAT] = choices.audioFormat.name
+            it[CAPTIONS] = choices.captions
+            it[SKIP_SPONSORS] = choices.skipSponsors
+            choices.audioLanguage?.let { language -> it[AUDIO_LANGUAGE] = language } ?: it.remove(AUDIO_LANGUAGE)
+            it[SUBTITLES_AS_FILE] = choices.subtitlesAsFile
+            it[SAVES_AS_SONG] = choices.savesAsSong
+            it[SAVES_COVER] = choices.savesCover
+        }
+    }
+
+    /** Changes the preferences as [change] makes them from what they are. */
+    suspend fun updatePreferences(change: (DownloaderPreferences) -> DownloaderPreferences) {
+        dataStore.edit { it.write(change(preferences.value)) }
+    }
+
+    private fun MutablePreferences.write(preferences: DownloaderPreferences) {
+        this[DOWNLOADS_AT_ONCE] = preferences.downloadsAtOnce
+        this[WIFI_ONLY] = preferences.wifiOnly
+        this[AUDIO_FOLDER] = preferences.audioFolder
+        this[VIDEO_FOLDER] = preferences.videoFolder
+        this[FILE_FOLDER] = preferences.fileFolder
+        this[FILE_NAME_TEMPLATE] = preferences.fileNameTemplate
+        this[SPONSOR_SEGMENTS] = preferences.sponsorSegments.map { it.id }.toSet()
+        this[USES_PROXY] = preferences.usesProxy
+        this[PROXY] = preferences.proxy
+        this[LIMITS_RATE] = preferences.limitsRate
+        this[RATE_LIMIT] = preferences.rateLimit
+        this[FORCES_IPV4] = preferences.forcesIpv4
+        this[CONCURRENT_FRAGMENTS] = preferences.concurrentFragments
+        this[USES_COOKIES] = preferences.usesCookies
+        this[SENDS_USER_AGENT] = preferences.sendsUserAgent
+        this[USER_AGENT] = preferences.userAgent
+        this[COMMAND_FOLDER] = preferences.commandFolder
+        this[SUBTITLE_LANGUAGES] = preferences.subtitleLanguages
+        this[SUBTITLE_FORMAT] = preferences.subtitleFormat.name
+        this[WRITES_AUTO_SUBTITLES] = preferences.writesAutoSubtitles
+        this[KEEPS_SUBTITLE_FILES] = preferences.keepsSubtitleFiles
+        this[DISABLED_TRANSCRIPTION_SERVICES] = preferences.disabledTranscriptionServices.map { it.name }.toSet()
+        this[SAVES_THUMBNAIL] = preferences.savesThumbnail
+        this[INCOGNITO] = preferences.isIncognito
+        this[HIDES_PREVIEW] = preferences.hidesPreview
+        this[SHOWS_LIBRARY_BUTTON] = preferences.showsLibraryButton
+        this[YT_DLP_CHANNEL] = preferences.ytDlpChannel.name
+        this[YT_DLP_AUTO_UPDATE] = preferences.ytDlpAutoUpdate?.name ?: NEVER
+        this[USES_ARCHIVE] = preferences.usesArchive
+        this[SUPADATA_KEY] = preferences.supadataKey
+        this[GROQ_KEY] = preferences.groqKey
+        this[TRANSCRIPTION_SERVICE] = preferences.transcriptionService.name
+    }
+}
+
+/** A folder named within Download, as folders were before any could be picked, as every folder is kept now. */
+private fun inDownload(name: String): String = "Download/" + name.trim('/', ' ')

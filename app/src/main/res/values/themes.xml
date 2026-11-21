@@ -1,0 +1,23 @@
+<resources>
+    <!-- Before Android 12 there is no launch screen: the window shows its background until the
+        first frame. -->
+    <style name="Theme.Music.V31" parent="Theme.Material3.DayNight.NoActionBar" />
+
+    <!--
+        The window is painted with `surface`, the same colour the app's Compose theme paints behind
+        every screen, so nothing of another colour shows before or between frames.
+    -->
+    <style name="Theme.Music" parent="Theme.Music.V31">
+        <item name="android:windowBackground">?attr/colorSurface</item>
+    </style>
+
+    <!--
+        A popup over the app a file was opened from - see OpenMediaActivity: see-through, so that app stays where it is
+        behind it, and opened and closed as a dialog is.
+    -->
+    <style name="Theme.Music.Popup" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Dialog</item>
+    </style>
+</resources>

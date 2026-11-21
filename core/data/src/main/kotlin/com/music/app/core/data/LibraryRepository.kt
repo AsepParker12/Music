@@ -1,0 +1,751 @@
+package com.music.app.core.data
+
+import com.music.app.core.common.cover.rankedCoverArtUris
+import com.music.app.core.common.di.ApplicationScope
+import com.music.app.core.common.di.DefaultDispatcher
+import com.music.app.core.data.playlist.PlaylistCoverImages
+import com.music.app.core.data.playlist.PlaylistFile
+import com.music.app.core.data.playlist.cover
+import com.music.app.core.data.playlist.coverArtUris
+import com.music.app.core.data.playlist.source
+import com.music.app.core.data.sort.LibrarySortOrders
+import com.music.app.core.data.sort.LibrarySortSpecs
+import com.music.app.core.data.sort.ListEntry
+import com.music.app.core.data.sort.SortSpec
+import com.music.app.core.database.dao.AlbumDao
+import com.music.app.core.database.dao.ArrangementDao
+import com.music.app.core.database.dao.ArtistDao
+import com.music.app.core.database.dao.FavoriteCollectionDao
+import com.music.app.core.database.dao.GenreDao
+import com.music.app.core.database.dao.MostPlayedCount
+import com.music.app.core.database.dao.PlayStatsDao
+import com.music.app.core.database.dao.PlaylistDao
+import com.music.app.core.database.dao.ResumePositionDao
+import com.music.app.core.database.entity.FavoriteCollectionEntity
+import com.music.app.core.database.entity.FolderRow
+import com.music.app.core.database.entity.PlaylistEntity
+import com.music.app.core.database.entity.PlaylistTrackEntity
+import com.music.app.core.database.entity.TrackEntity
+import com.music.app.core.database.dao.TrackDao
+import com.music.app.core.database.entity.toDomain
+import com.music.app.core.datastore.LibrarySettings
+import com.music.app.core.datastore.PlaybackSettings
+import com.music.app.core.model.Album
+import com.music.app.core.model.Artist
+import com.music.app.core.model.CollectionStats
+import com.music.app.core.model.FAVORITES_PLAYLIST_ID
+import com.music.app.core.model.Folder
+import com.music.app.core.model.FolderView
+import com.music.app.core.model.Genre
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.Playlist
+import com.music.app.core.model.PlaylistCover
+import com.music.app.core.model.Track
+import com.music.app.core.model.playbackParentOf
+import com.music.app.core.model.toStorageKey
+import com.music.app.core.model.topMostFoldersOf
+import com.music.app.core.model.sort.SortOrder
+import com.music.app.core.model.sort.SortTarget
+import com.music.app.core.model.sort.SortableList
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.shareIn
+import kotlinx.coroutines.flow.stateIn
+
+/**
+ * The whole app's single view of the music library.
+ *
+ * Before this existed, nine different ViewModels each called `trackDao.observeAll()` and then
+ * mapped, filtered and sorted the entire table themselves - inside `stateIn(viewModelScope, …)`,
+ * whose transform runs on `Dispatchers.Main.immediate`. So every write to `tracks` fanned out into
+ * up to nine full-library re-maps **on the main thread**, which is what made the list pop in and
+ * stutter. Three properties fix that, and all three are load-bearing:
+ *
+ *  1. **Computed once.** Each list is derived exactly once here and shared; a tab, the player, the
+ *     search screen and the theme all read the same already-sorted objects.
+ *  2. **Computed off the main thread.** Everything is shared from an [ApplicationScope] running on
+ *     the default dispatcher, so no mapping or sorting ever touches the frame.
+ *  3. **Computed only when something changed.** [conflate] collapses a burst of writes mid-scan
+ *     into one recompute, and [distinctUntilChanged] drops emissions whose *content* is identical -
+ *     so a rescan that finds nothing new cannot repaint anything.
+ *
+ * Every list is sorted the way the user last chose for it (see [LibrarySortOrders]), and re-sorted
+ * here - not on screen - the moment that choice changes.
+ *
+ * Sharing is [SharingStarted.Eagerly] on a process-lifetime scope: the library survives a screen
+ * being closed or the activity being recreated, so returning to it is a read from memory, not a
+ * fresh round trip to SQLite.
+ */
+@Singleton
+class LibraryRepository @Inject constructor(
+    private val trackDao: TrackDao,
+    private val albumDao: AlbumDao,
+    private val artistDao: ArtistDao,
+    private val genreDao: GenreDao,
+    private val playlistDao: PlaylistDao,
+    private val arrangementDao: ArrangementDao,
+    private val favoriteCollectionDao: FavoriteCollectionDao,
+    private val playStatsDao: PlayStatsDao,
+    resumePositionDao: ResumePositionDao,
+    private val playlistCoverImages: PlaylistCoverImages,
+    private val sortOrders: LibrarySortOrders,
+    librarySettings: LibrarySettings,
+    private val playbackSettings: PlaybackSettings,
+    @ApplicationScope private val scope: CoroutineScope,
+    @DefaultDispatcher private val defaultDispatcher: CoroutineDispatcher,
+) {
+
+    /**
+     * Starts from the stored mode, which is already in memory, so the first sort is the one the user
+     * chose - the library is never shown sorted one way and then re-sorted the other.
+     */
+    private val intelligentSorting: StateFlow<Boolean> = librarySettings.intelligentSortingEnabled.flow
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, librarySettings.intelligentSortingEnabled.value)
+
+    /** How folders inside one another are listed - see [FolderView]. */
+    private val folderView: StateFlow<FolderView> = librarySettings.folderView.flow
+        .distinctUntilChanged()
+        .stateIn(scope, SharingStarted.Eagerly, librarySettings.folderView.value)
+
+    /**
+     * How many times each track was listened to through, by its id - what every list sorted by play count is
+     * ranked by. Only a listen counting changes it, not one merely starting, so a track starting re-sorts
+     * nothing. Shared once read rather than from an empty start, so a list sorted by it is never shown in
+     * another order first.
+     */
+    private val playCounts: SharedFlow<Map<Long, Int>> = playStatsDao.observePlayCounts()
+        .map { rows -> rows.associate { it.trackId to it.playCount } }
+        .distinctUntilChanged()
+        .shareIn(scope, SharingStarted.Eagerly, replay = 1)
+
+    /** The music - every track but the videos, which are the Videos tab's alone. */
+    val tracks: StateFlow<LibraryContent<Track>> = sortedTabOf(isVideo = false, LibrarySortSpecs.tracks)
+
+    /** Every video - the Videos tab. */
+    val videos: StateFlow<LibraryContent<Track>> = sortedTabOf(isVideo = true, LibrarySortSpecs.videos)
+
+    /** Every track and video, each collection's [CollectionStats] are worked out from. */
+    private val everyTrack: Flow<List<Track>> = combine(tracks.readyItems(), videos.readyItems(), List<Track>::plus)
+
+    /**
+     * The library tab [track] is listed on - the music or the videos - whole, as it is sorted: what it plays among, played
+     * from that tab, wherever on it the user found it - a search's results included, which only point it out.
+     */
+    fun tabTracksOf(track: Track): List<Track> = (if (track.isVideo) videos else tracks).value.itemsOrEmpty
+
+    /** Where each video part-way through was left, by its id - what its row's progress line shows. */
+    val resumePositionsMs: StateFlow<Map<Long, Long>> = resumePositionDao.observeAll()
+        .map { rows -> rows.associate { it.trackId to it.positionMs } }
+        .stateIn(scope, SharingStarted.Eagerly, emptyMap())
+
+    val albums: StateFlow<LibraryContent<Album>> = albumDao.observeAll()
+        .withStatsBy { track -> listOf(track.albumId) }
+        .sortedFor(LibrarySortSpecs.albums) { (rows, stats) -> rows.map { it.toDomain().copy(stats = stats.of(it.id)) } }
+        .shareContent()
+
+    val artists: StateFlow<LibraryContent<Artist>> = artistDao.observeAll()
+        .withStatsBy(Track::artistIds)
+        .sortedFor(LibrarySortSpecs.artists) { (rows, stats) -> rows.map { it.toDomain().copy(stats = stats.of(it.id)) } }
+        .shareContent()
+
+    /** [artists] as they are listed for choosing among - see [LibrarySettings.hidesCollaborators]. Every artist can still be opened. */
+    val listedArtists: StateFlow<LibraryContent<Artist>> = combine(artists, librarySettings.hidesCollaborators.flow) { artists, hidesCollaborators ->
+        when {
+            hidesCollaborators && artists is LibraryContent.Ready -> LibraryContent.Ready(artists.items.filter { it.albumCount > 0 })
+            else -> artists
+        }
+    }.stateIn(scope, SharingStarted.Eagerly, LibraryContent.Loading)
+
+    val genres: StateFlow<LibraryContent<Genre>> = genreDao.observeAll()
+        .withStatsBy { track -> listOfNotNull(track.genreId) }
+        .sortedFor(LibrarySortSpecs.genres) { (rows, stats) -> rows.map { it.toDomain().copy(stats = stats.of(it.id)) } }
+        .shareContent()
+
+    /** The folders holding music, as the Folders tab lists them - see [FolderView]. */
+    val folders: StateFlow<LibraryContent<Folder>> = foldersOf(isVideo = false, folderView)
+
+    /** Every folder holding a video, counting its videos alone - listed as [folders] are. */
+    val videoFolders: StateFlow<LibraryContent<Folder>> = foldersOf(isVideo = true, folderView)
+
+    /** Each folder holding music, alone - one inside another included - for what is chosen folder by folder. */
+    val mediaFolders: StateFlow<LibraryContent<Folder>> = foldersOf(isVideo = false, flowOf(FolderView.SEPARATE))
+
+    /** [mediaFolders], for videos. */
+    val mediaVideoFolders: StateFlow<LibraryContent<Folder>> = foldersOf(isVideo = true, flowOf(FolderView.SEPARATE))
+
+    /**
+     * [tracksById], or null until the tracks and the videos have both been read - for what must tell a track not in
+     * the library from one not read yet, rather than show it missing for a moment.
+     */
+    val loadedTracksById: StateFlow<Map<Long, Track>?> = tracks
+        .combine(videos) { tracks, videos -> (tracks + videos).itemsOrNull?.associateBy { it.id } }
+        .flowOn(defaultDispatcher)
+        .stateIn(scope, SharingStarted.Eagerly, null)
+
+    /**
+     * Track lookup by id - the videos' too, as they are queued like any track - for the player and the
+     * notification theme. Derived from [tracks] so it costs one pass per library change rather than a
+     * fresh query - and crucially, so a playback event (which fires several times a second) never
+     * re-reads the database at all.
+     */
+    val tracksById: StateFlow<Map<Long, Track>> = loadedTracksById
+        .map { it.orEmpty() }
+        .stateIn(scope, SharingStarted.Eagerly, emptyMap())
+
+    /** Artist lookup by id - what names the artists a track or album is credited to - derived from [artists] as [tracksById] is. */
+    val artistsById: StateFlow<Map<Long, Artist>> = artists
+        .map { artists -> artists.itemsOrEmpty.associateBy { it.id } }
+        .flowOn(defaultDispatcher)
+        .stateIn(scope, SharingStarted.Eagerly, emptyMap())
+
+    /**
+     * The section each row of a library tab sits in under that tab's current sort - what a fast
+     * scroller's popup names it by. Kept in step with the sort the list itself is in.
+     */
+    val trackSections: StateFlow<(Track) -> String?> = sectionsOf(LibrarySortSpecs.tracks, ::tabEntryOf)
+    val videoSections: StateFlow<(Track) -> String?> = sectionsOf(LibrarySortSpecs.videos, ::tabEntryOf)
+    val albumSections: StateFlow<(Album) -> String?> = sectionsOf(LibrarySortSpecs.albums)
+    val artistSections: StateFlow<(Artist) -> String?> = sectionsOf(LibrarySortSpecs.artists)
+    val genreSections: StateFlow<(Genre) -> String?> = sectionsOf(LibrarySortSpecs.genres)
+    val folderSections: StateFlow<(Folder) -> String?> = sectionsOf(LibrarySortSpecs.folders)
+
+    /** `true` once the library has been read from disk - the app's first-paint gate. */
+    val isReady: StateFlow<Boolean> = tracks
+        .map { !it.isLoading }
+        .stateIn(scope, SharingStarted.Eagerly, false)
+
+    /**
+     * The section each of a collection's tracks sits in under that collection's own sort - [target]'s - read as its
+     * list holds it: with its play count, and in a playlist with when it joined it. See [trackSections]. Null while
+     * that sort names no sections - the user's own order, or one by disc and track number.
+     */
+    fun collectionTrackSections(target: SortTarget): Flow<((Track) -> String?)?> {
+        // Every collection's tracks are sorted as the entries that hold them.
+        @Suppress("UNCHECKED_CAST")
+        val spec = LibrarySortSpecs.of(target.list) as SortSpec<ListEntry>
+        val joinedAt = target.instanceId?.takeIf { target.list == SortableList.PLAYLIST_TRACKS }?.let { playlistId ->
+            playlistDao.observeTracks(playlistId.toLong()).map { rows -> rows.associate { it.track.id to it.addedAt } }
+        } ?: flowOf(emptyMap())
+        return combine(sortOrders.order(target), intelligentSorting, playCounts, joinedAt) { order, intelligent, plays, joined ->
+            if (!spec.namesSections(order)) return@combine null
+            val sectionOf: (Track) -> String? = { track ->
+                val entry = ListEntry(track, addedAt = joined[track.id] ?: track.dateAddedSeconds, playCount = plays[track.id] ?: 0)
+                spec.section(entry, order, intelligent)
+            }
+            sectionOf
+        }
+    }
+
+    // region Scoped reads
+    //
+    // Detail screens used to observe the entire tracks table and filter it down to one album's
+    // handful of rows - on the main thread, on every library change. These read only their own
+    // rows, straight off the indices added for them.
+
+    fun album(albumId: Long): Flow<Album?> =
+        albumDao.observeById(albumId).map { it?.toDomain() }.distinctUntilChanged()
+
+    fun artist(artistId: Long): Flow<Artist?> =
+        artistDao.observeById(artistId).map { it?.toDomain() }.distinctUntilChanged()
+
+    fun genre(genreId: Long): Flow<Genre?> =
+        genreDao.observeById(genreId).map { it?.toDomain() }.distinctUntilChanged()
+
+    /** Album tracks, in playback order - disc, then track number - unless sorted otherwise. */
+    fun albumTracks(albumId: Long): Flow<LibraryContent<Track>> =
+        trackDao.observeByAlbum(albumId)
+            .arrangedFor(LibrarySortSpecs.albumTracks, albumId.toString()) { ListEntry(it.toDomain()) }
+            .asTrackContent()
+
+    fun artistTracks(artistId: Long): Flow<LibraryContent<Track>> =
+        trackDao.observeByArtist(artistId)
+            .arrangedFor(LibrarySortSpecs.artistTracks, artistId.toString()) { ListEntry(it.toDomain()) }
+            .asTrackContent()
+
+    fun genreTracks(genreId: Long): Flow<LibraryContent<Track>> =
+        trackDao.observeByGenre(genreId)
+            .arrangedFor(LibrarySortSpecs.genreTracks, genreId.toString()) { ListEntry(it.toDomain()) }
+            .asTrackContent()
+
+    /**
+     * The folders [folderPaths] stand for as listed: each one - and, while folders are [FolderView.GROUPED], every
+     * folder holding files inside it, which it is listed with.
+     */
+    fun foldersListedAs(folderPaths: Collection<String>): Set<String> {
+        if (folderView.value != FolderView.GROUPED) return folderPaths.toSet()
+        val everyFolder = (mediaFolders.value.itemsOrEmpty + mediaVideoFolders.value.itemsOrEmpty).map { it.path }
+        return folderPaths.flatMapTo(mutableSetOf()) { listed -> everyFolder.filter { it.startsWith("$listed/") } + listed }
+    }
+
+    /**
+     * The music in [folderPath] - or, where [isVideo], its videos - with, while folders are [FolderView.GROUPED],
+     * those of every folder inside it.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun folderTracks(folderPath: String, isVideo: Boolean): Flow<LibraryContent<Track>> =
+        folderView.flatMapLatest { view ->
+            if (view == FolderView.GROUPED) folderTracksOf(trackDao.observeInFolderTree(folderPath, isVideo), folderPath) else folderOwnTracks(folderPath, isVideo)
+        }
+
+    /** The music in [folderPath] alone - or, where [isVideo], its videos - none of a folder inside it, in the folder's order. */
+    fun folderOwnTracks(folderPath: String, isVideo: Boolean): Flow<LibraryContent<Track>> =
+        folderTracksOf(trackDao.observeByFolder(folderPath, isVideo), folderPath)
+
+    private fun folderTracksOf(rows: Flow<List<TrackEntity>>, folderPath: String): Flow<LibraryContent<Track>> =
+        rows.arrangedFor(LibrarySortSpecs.folderTracks, folderPath) { ListEntry(it.toDomain()) }.asTrackContent()
+
+    /** Resolves persisted queue ids to tracks, in the order given. */
+    suspend fun tracksByIds(ids: List<Long>): List<Track> {
+        if (ids.isEmpty()) return emptyList()
+        val byId = trackDao.getByIds(ids).associateBy({ it.id }, { it.toDomain() })
+        return ids.mapNotNull { byId[it] }
+    }
+
+    /**
+     * The tracks, in their current sort, of every playlist whose cover is its first or last track - of
+     * those alone, so a playlist with any other cover never has its tracks read to draw it.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val tracksOfPlaylistsCoveredBySortedTrack: Flow<Map<Long, List<Track>>> =
+        playlistDao.observeIdsCoveredBySortedTrack()
+            .distinctUntilChanged()
+            .flatMapLatest { playlistIds ->
+                if (playlistIds.isEmpty()) {
+                    flowOf(emptyMap())
+                } else {
+                    combine(playlistIds.map { id -> playlistTracks(id).map { id to it.itemsOrEmpty } }) { it.toMap() }
+                }
+            }
+
+    /** Every playlist's row, read once for the list and for its sections alike. */
+    private val playlistRows = playlistDao.observeAll().shareIn(scope, SharingStarted.Eagerly, replay = 1)
+
+    /** Every playlist in the chosen order, Favorites first, with the count and cover each row shows. */
+    val playlists: StateFlow<LibraryContent<Playlist>> = combine(
+        playlistRows.sortedFor(LibrarySortSpecs.playlists) { rows -> rows },
+        playlistDao.observeCoverArt(),
+        tracksOfPlaylistsCoveredBySortedTrack,
+    ) { rows, coverRows, sortedTracksByPlaylist ->
+        val coversByPlaylist = coverRows.groupBy { it.playlistId }
+        rows
+            // Stable, so the chosen order holds among the rest. Favorites is the one playlist
+            // every user has, and it keeps the top whatever playlists are sorted by.
+            .sortedByDescending { it.isBuiltIn }
+            .map { row ->
+                val cover = row.cover()
+                Playlist(
+                    id = row.id,
+                    name = row.name,
+                    isBuiltIn = row.isBuiltIn,
+                    trackCount = row.trackCount,
+                    videoCount = row.videoCount,
+                    cover = cover,
+                    coverArtUris = cover.coverArtUris(
+                        stackedCoverArtUris = rankedCoverArtUris(
+                            coversByPlaylist[row.id].orEmpty().associate { it.coverArtUri to it.trackCount },
+                        ),
+                        sortedTracks = sortedTracksByPlaylist[row.id].orEmpty(),
+                        chosenTrackCoverArtUri = row.coverTrackArtUri,
+                    ),
+                )
+            }
+    }
+        .shareContent()
+
+    /** The section each playlist sits in, by its id, under the Playlists tab's sort - see [trackSections]. */
+    val playlistSections: StateFlow<(playlistId: Long) -> String?> =
+        combine(playlistRows, sortOrders.order(SortTarget(SortableList.PLAYLISTS)), intelligentSorting) { rows, order, intelligent ->
+            val rowsById = rows.associateBy { it.id }
+            val sectionOf: (Long) -> String? = { id -> rowsById[id]?.let { LibrarySortSpecs.playlists.section(it, order, intelligent) } }
+            sectionOf
+        }
+            .flowOn(defaultDispatcher)
+            .stateIn(scope, SharingStarted.Eagerly) { null }
+
+    /** How many tracks Most played would show - its row's subtitle, and whether it is listed at all. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val mostPlayedCount: StateFlow<MostPlayedCount> = playbackSettings.countsVideosInMostPlayed.flow
+        .flatMapLatest(playStatsDao::observeMostPlayedCount)
+        .stateIn(scope, SharingStarted.Eagerly, MostPlayedCount(trackCount = 0, videoCount = 0))
+
+    /** The music and the videos - every track, as the playlists that may hold either are matched against. */
+    val allTracks: List<Track>
+        get() = (tracks.value + videos.value).itemsOrEmpty
+
+    /** [folders] then [videoFolders] - as the Folders tab lists them, each kind under its own heading. */
+    val allFolders: StateFlow<LibraryContent<Folder>> = combine(folders, videoFolders, LibraryContent<Folder>::plus)
+        .stateIn(scope, SharingStarted.Eagerly, folders.value + videoFolders.value)
+
+    /**
+     * A playlist's tracks, in the order they are sorted - the ones added last first, by default.
+     *
+     * Sorting only changes what is shown. The arranged order is never rewritten by it: it stays the
+     * Custom order, which is the one dragging edits.
+     */
+    fun playlistTracks(playlistId: Long): Flow<LibraryContent<Track>> = playlistEntries(playlistId).asTrackContent()
+
+    private fun playlistEntries(playlistId: Long): Flow<List<ListEntry>> =
+        playlistDao.observeTracks(playlistId)
+            .arrangedFor(LibrarySortSpecs.playlistTracks, playlistId.toString()) { row ->
+                ListEntry(track = row.track.toDomain(), addedAt = row.addedAt)
+            }
+
+    /** A playlist as its file carries it: as it is shown, when each track joined it, and how it is sorted. */
+    suspend fun playlistFile(playlistId: Long): PlaylistFile = PlaylistFile(
+        entries = playlistEntries(playlistId).first().map { PlaylistFile.Entry(it.track, it.addedAt) },
+        order = sortOrders.currentOrder(playlistTarget(playlistId)),
+    )
+
+    /**
+     * Creates a playlist named [name] holding [file]'s tracks, as it was exported: each track's date
+     * added, the order it was shown in as its arrangement, and its sort. Whether it was created - not
+     * when the file names no track this library has, or the name is taken, leaving nothing behind.
+     */
+    suspend fun importPlaylist(name: String, file: PlaylistFile): Boolean {
+        if (file.entries.isEmpty()) return false
+        val playlistId = createPlaylist(name) ?: return false
+        val importedAt = System.currentTimeMillis()
+        playlistDao.addTracks(
+            playlistId,
+            file.entries.mapIndexed { index, entry ->
+                PlaylistTrackEntity(playlistId, entry.track.id, entry.addedAt ?: (importedAt + index))
+            },
+            importedAt,
+        )
+        sortOrders.restore(playlistTarget(playlistId), file.entries.map { it.track.id }, file.order)
+        return true
+    }
+
+    /**
+     * Creates a playlist and returns its id, or null when the name is already taken.
+     *
+     * The uniqueness rule is the database's own (a unique index on `name`), so two screens racing
+     * to create the same name cannot both win - the loser simply gets null back.
+     */
+    /** Favorites is an ordinary playlist, so screens open it the same way as any other. */
+    val favoritesPlaylistId: Long get() = FAVORITES_PLAYLIST_ID
+
+    suspend fun createPlaylist(name: String): Long? {
+        val createdAt = System.currentTimeMillis()
+        return runCatching {
+            playlistDao.insert(
+                PlaylistEntity(name = name.trim(), createdAt = createdAt, modifiedAt = createdAt),
+            )
+        }.getOrNull()
+    }
+
+    /** Renames a playlist. Built-in ones are refused by the query itself, not by the caller. */
+    suspend fun renamePlaylist(playlistId: Long, name: String) {
+        playlistDao.rename(playlistId, name.trim(), System.currentTimeMillis())
+    }
+
+    /**
+     * Renames a playlist and sets its cover, as one change - or throws, leaving it as it was, when the
+     * name is taken or a picked image cannot be read. A built-in playlist keeps its name and takes the cover.
+     *
+     * A picked image is copied in only here, on saving, so an edit given up on leaves no copy behind;
+     * the copy it replaces is deleted once the change is stored.
+     */
+    suspend fun editPlaylist(playlistId: Long, name: String, cover: PlaylistCover) {
+        val previousImageUri = playlistDao.coverImageUri(playlistId)
+        val storedCover = if (cover is PlaylistCover.Image && !playlistCoverImages.isOwned(cover.uri)) {
+            PlaylistCover.Image(playlistCoverImages.import(cover.uri))
+        } else {
+            cover
+        }
+        val imageUri = (storedCover as? PlaylistCover.Image)?.uri
+        try {
+            playlistDao.edit(
+                playlistId = playlistId,
+                name = name.trim(),
+                coverSource = storedCover.source,
+                coverTrackId = (storedCover as? PlaylistCover.OfTrack)?.trackId,
+                coverImageUri = imageUri,
+                editedAt = System.currentTimeMillis(),
+            )
+        } catch (failure: Exception) {
+            if (imageUri != null && imageUri != previousImageUri) playlistCoverImages.delete(imageUri)
+            throw failure
+        }
+        if (previousImageUri != null && previousImageUri != imageUri) playlistCoverImages.delete(previousImageUri)
+    }
+
+    /** Deletes a playlist, its membership, its order and its cover image. The tracks themselves are untouched. */
+    suspend fun deletePlaylist(playlistId: Long) {
+        val imageUri = playlistDao.coverImageUri(playlistId)
+        if (!playlistDao.delete(playlistId)) return
+        sortOrders.forget(playlistTarget(playlistId))
+        if (imageUri != null) playlistCoverImages.delete(imageUri)
+    }
+
+    suspend fun removeTracksFromPlaylist(playlistId: Long, trackIds: List<Long>) {
+        playlistDao.removeTracks(playlistId, trackIds, System.currentTimeMillis())
+    }
+
+    /** Adds tracks to a playlist as new ones, keeping the place and date of any already in it. */
+    suspend fun addTracksToPlaylist(playlistId: Long, trackIds: List<Long>) {
+        val addedAt = System.currentTimeMillis()
+        playlistDao.addTracks(playlistId, membershipsOf(playlistId, trackIds, addedAt), addedAt)
+    }
+
+    /** Forgets everything played so far: "Recent", play counts and all. */
+    suspend fun clearListenHistory() = playStatsDao.clear()
+
+    /** Takes [trackIds] out of "Recent", leaving how often they were played - see [PlayStatsDao.forgetLastPlayed]. */
+    suspend fun removeFromRecentlyPlayed(trackIds: List<Long>) {
+        playStatsDao.forgetLastPlayed(trackIds)
+    }
+
+    /** Takes [trackIds] out of "Most played", their play counts reset to zero. */
+    suspend fun removeFromMostPlayed(trackIds: List<Long>) {
+        playStatsDao.resetPlayCounts(trackIds)
+    }
+
+    /** "Recent" and "Most played" - ordered by the statistics, so likewise never re-sorted. */
+    fun recentlyPlayedTracks(): Flow<LibraryContent<Track>> =
+        playStatsDao.observeRecentlyPlayed().map { entities ->
+            LibraryContent.Ready(entities.map { it.toDomain() })
+        }
+
+    /** Videos among them as [PlaybackSettings.countsVideosInMostPlayed] has it. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun mostPlayedTracks(): Flow<LibraryContent<Track>> =
+        playbackSettings.countsVideosInMostPlayed.flow.flatMapLatest(playStatsDao::observeMostPlayed).map { entities ->
+            LibraryContent.Ready(entities.map { it.toDomain() })
+        }
+
+    /** [parent]'s tracks, in the order its own list shows them - what playing it from anywhere plays. */
+    fun collectionTracks(parent: PlaybackParent): Flow<LibraryContent<Track>> = when (parent) {
+        is PlaybackParent.Album -> albumTracks(parent.albumId)
+        is PlaybackParent.Artist -> artistTracks(parent.artistId)
+        is PlaybackParent.Genre -> genreTracks(parent.genreId)
+        is PlaybackParent.Playlist -> playlistTracks(parent.playlistId)
+        is PlaybackParent.Folder -> folderTracks(parent.folderPath, parent.isVideo)
+        PlaybackParent.RecentlyPlayed -> recentlyPlayedTracks()
+        PlaybackParent.MostPlayed -> mostPlayedTracks()
+        PlaybackParent.Videos -> videos
+    }
+
+    /**
+     * [parent]'s name as the library has it now, or null once it is no longer in the library - and for
+     * the videos and the two listening histories, which have no name of their own to give.
+     */
+    fun collectionName(parent: PlaybackParent): Flow<String?> = when (parent) {
+        is PlaybackParent.Album -> album(parent.albumId).map { it?.title }
+        is PlaybackParent.Artist -> artist(parent.artistId).map { it?.name }
+        is PlaybackParent.Genre -> genre(parent.genreId).map { it?.name }
+        is PlaybackParent.Playlist -> playlists.readyItems().map { all -> all.find { it.id == parent.playlistId }?.name }
+        is PlaybackParent.Folder -> (if (parent.isVideo) videoFolders else folders).readyItems()
+            .map { all -> all.find { it.path == parent.folderPath }?.name }
+        PlaybackParent.Videos, PlaybackParent.RecentlyPlayed, PlaybackParent.MostPlayed -> flowOf(null)
+    }.distinctUntilChanged()
+
+    /**
+     * The ids in Favorites, for anything that only needs to know whether a track is one.
+     *
+     * A set rather than a list of tracks: the player asks this about a single track on every song
+     * change, and the playlist screen already reads the tracks themselves in order.
+     */
+    val favoriteTrackIds: StateFlow<Set<Long>> = playlistDao.observeTrackIds(FAVORITES_PLAYLIST_ID)
+        .map { it.toSet() }
+        .stateIn(scope, SharingStarted.Eagerly, emptySet())
+
+    /**
+     * The collections favorited as themselves - albums, artists, genres, folders and playlists - the latest
+     * favorited first, for Favorites to list one tap away. A favorited track is in Favorites' playlist instead.
+     */
+    val favoriteCollections: StateFlow<List<PlaybackParent>> = favoriteCollectionDao.observeAll()
+        .map { keys -> keys.mapNotNull(::playbackParentOf) }
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    suspend fun setFavorite(trackId: Long, isFavorite: Boolean) {
+        setFavorites(listOf(trackId), emptyList(), isFavorite)
+    }
+
+    /**
+     * Favorites [trackIds] - into Favorites' playlist - and [collections] as themselves, or, while not
+     * [isFavorite], takes them all out of Favorites. Favorites' own playlist is never one of [collections].
+     */
+    suspend fun setFavorites(trackIds: List<Long>, collections: List<PlaybackParent>, isFavorite: Boolean) {
+        val changedAt = System.currentTimeMillis()
+        val collectionKeys = collections.map { it.toStorageKey() }
+        if (isFavorite) {
+            if (trackIds.isNotEmpty()) {
+                playlistDao.addTracks(FAVORITES_PLAYLIST_ID, membershipsOf(FAVORITES_PLAYLIST_ID, trackIds, changedAt), changedAt)
+            }
+            if (collectionKeys.isNotEmpty()) {
+                // Each a millisecond before the one before it, so collections favorited together are listed -
+                // the latest favorited first - in the order they were given.
+                favoriteCollectionDao.insert(
+                    collectionKeys.mapIndexed { index, key -> FavoriteCollectionEntity(key, changedAt - index) },
+                )
+            }
+        } else {
+            if (trackIds.isNotEmpty()) playlistDao.removeTracks(FAVORITES_PLAYLIST_ID, trackIds, changedAt)
+            if (collectionKeys.isNotEmpty()) favoriteCollectionDao.delete(collectionKeys)
+        }
+    }
+
+    // endregion
+
+    private fun playlistTarget(playlistId: Long) = SortTarget(SortableList.PLAYLIST_TRACKS, playlistId.toString())
+
+    /**
+     * [trackIds] as they join [playlistId] at [addedAt] - each a millisecond after the one before, so
+     * tracks added together keep the order they were added in wherever a playlist is sorted by date.
+     */
+    private fun membershipsOf(playlistId: Long, trackIds: List<Long>, addedAt: Long): List<PlaylistTrackEntity> =
+        trackIds.mapIndexed { index, trackId -> PlaylistTrackEntity(playlistId, trackId, addedAt + index) }
+
+    /**
+     * A collection's rows as [spec]'s entries, each where [instanceId]'s hand-made order puts it - read
+     * alongside the rows, so a drop re-sorts the list as soon as it is stored - sorted the way the list
+     * is set to.
+     */
+    private fun <R> Flow<List<R>>.arrangedFor(
+        spec: SortSpec<ListEntry>,
+        instanceId: String,
+        toEntry: (R) -> ListEntry,
+    ): Flow<List<ListEntry>> =
+        combine(this, arrangementDao.observe(spec.list, instanceId), playCounts, ::Triple)
+            .sortedFor(spec, instanceId) { (rows, arranged, plays) ->
+                val positions = arranged.associate { it.trackId to it.position }
+                rows.map { row ->
+                    toEntry(row).let { entry ->
+                        entry.copy(position = positions[entry.track.id], playCount = plays[entry.track.id] ?: 0)
+                    }
+                }
+            }
+
+    private fun Flow<List<ListEntry>>.asTrackContent(): Flow<LibraryContent<Track>> =
+        map { entries -> entries.map { it.track } }.asContent()
+
+    /**
+     * Turns rows into [spec]'s items, sorted the way its list is set to, and sorts them again
+     * whenever that order or the name-sorting mode changes.
+     */
+    private fun <R, T> Flow<R>.sortedFor(
+        spec: SortSpec<T>,
+        // Which list of its kind this is, for the lists there can be many of - so one playlist's order
+        // is its own. The library's own lists are the only one of their kind and name nothing here.
+        instanceId: String? = null,
+        toItems: (R) -> List<T>,
+    ): Flow<List<T>> =
+        // conflate() sits *upstream* of the transform on purpose. Room can fire several
+        // invalidations in quick succession; without it each one would be mapped and sorted in
+        // turn, and only the last result would ever be shown. With it, anything superseded while a
+        // sort is still running is dropped instead of computed.
+        combine(
+            conflate(),
+            sortOrders.order(SortTarget(spec.list, instanceId)),
+            intelligentSorting,
+        ) { rows, order, intelligent ->
+            spec.sort(toItems(rows), order, intelligent)
+        }
+
+    /**
+     * [spec]'s sections under its list's current order, starting from the order already in memory - for each
+     * row's item, read as [spec]'s entry of it by [entryOf] with the play counts as they stand.
+     */
+    private fun <U, T> sectionsOf(spec: SortSpec<T>, entryOf: (U, playCounts: Map<Long, Int>) -> T): StateFlow<(U) -> String?> {
+        val target = SortTarget(spec.list, null)
+        fun sectionsFor(order: SortOrder, intelligent: Boolean, plays: Map<Long, Int>): (U) -> String? =
+            { item -> spec.section(entryOf(item, plays), order, intelligent) }
+        return combine(sortOrders.order(target), intelligentSorting, playCounts, ::sectionsFor).stateIn(
+            scope,
+            SharingStarted.Eagerly,
+            sectionsFor(sortOrders.currentOrder(target), intelligentSorting.value, playCounts.replayCache.firstOrNull().orEmpty()),
+        )
+    }
+
+    private fun <T> sectionsOf(spec: SortSpec<T>): StateFlow<(T) -> String?> = sectionsOf(spec) { item: T, _ -> item }
+
+    /** A library tab's track as its list holds it. */
+    private fun tabEntryOf(track: Track, playCounts: Map<Long, Int>) = ListEntry(track, playCount = playCounts[track.id] ?: 0)
+
+    /** The music - or, where [isVideo], the videos - sorted as [spec], their tab's, says. */
+    private fun sortedTabOf(isVideo: Boolean, spec: SortSpec<ListEntry>): StateFlow<LibraryContent<Track>> =
+        combine(trackDao.observeAll(isVideo), playCounts, ::Pair)
+            .sortedFor(spec) { (rows, plays) -> rows.map { tabEntryOf(it.toDomain(), plays) } }
+            .map { entries -> entries.map { it.track } }
+            .shareContent()
+
+    /**
+     * These collections' rows, with what each one's tracks add up to: the collections [keysOf] puts each track in,
+     * worked out afresh as the tracks or their play counts change.
+     */
+    private fun <R, K> Flow<List<R>>.withStatsBy(keysOf: (Track) -> Iterable<K>): Flow<Pair<List<R>, Map<K, CollectionStats>>> =
+        combine(this, everyTrack, playCounts) { rows, tracks, plays -> rows to tracks.statsBy(plays, keysOf) }
+
+    /** What the tracks of each collection [keysOf] puts them in add up to, by that collection. */
+    private fun <K> List<Track>.statsBy(playCounts: Map<Long, Int>, keysOf: (Track) -> Iterable<K>): Map<K, CollectionStats> {
+        val stats = HashMap<K, CollectionStats>()
+        for (track in this) {
+            val trackStats = CollectionStats(track.durationMs, playCounts[track.id] ?: 0, track.dateAddedSeconds)
+            for (key in keysOf(track)) stats.merge(key, trackStats, CollectionStats::plus)
+        }
+        return stats
+    }
+
+    /** The stats of [key]'s collection - none for one holding no track. */
+    private fun <K> Map<K, CollectionStats>.of(key: K): CollectionStats = this[key] ?: CollectionStats()
+
+    /**
+     * The folders holding music - or, where [isVideo], videos - with the count and cover each row shows, as [view]
+     * lists them: grouped, a folder counts the files and covers of every folder listed under it too. Aggregated by
+     * SQLite (`GROUP BY folderPath`), not by grouping the track list in memory.
+     */
+    private fun foldersOf(isVideo: Boolean, view: Flow<FolderView>): StateFlow<LibraryContent<Folder>> =
+        combine(
+            trackDao.observeFolders(isVideo),
+            trackDao.observeFolderCoverArt(isVideo),
+            view,
+            (if (isVideo) videos else tracks).readyItems(),
+            playCounts,
+        ) { rows, coverRows, folderView, folderTracks, plays ->
+            val listedUnder = if (folderView == FolderView.GROUPED) topMostFoldersOf(rows.map { it.path }) else emptyMap()
+            fun listedPathOf(path: String) = listedUnder[path] ?: path
+            val coversByPath = coverRows.groupBy { listedPathOf(it.path) }
+            val statsByPath = folderTracks.statsBy(plays) { track -> listOf(listedPathOf(track.folderPath)) }
+            rows.groupBy { listedPathOf(it.path) }.map { (path, group) ->
+                FolderRow(path, group.sumOf { it.trackCount }).toDomain(
+                    coverArtUris = rankedCoverArtUris(
+                        coversByPath[path].orEmpty().groupingBy { it.coverArtUri }.fold(0) { count, row -> count + row.trackCount },
+                    ),
+                    isVideo = isVideo,
+                ).copy(stats = statsByPath.of(path))
+            }
+        }
+            .sortedFor(LibrarySortSpecs.folders) { rows -> rows }
+            .shareContent()
+
+    /** The rows once read - a missing collection is then really missing, not merely not loaded yet. */
+    private fun <T> Flow<LibraryContent<T>>.readyItems(): Flow<List<T>> = mapNotNull { it.itemsOrNull }
+
+    private fun <T> Flow<List<T>>.shareContent(): StateFlow<LibraryContent<T>> =
+        map { LibraryContent.Ready(it) as LibraryContent<T> }
+            .distinctUntilChanged()
+            .stateIn(scope, SharingStarted.Eagerly, LibraryContent.Loading)
+
+    private fun <T> Flow<List<T>>.asContent(): Flow<LibraryContent<T>> =
+        map { LibraryContent.Ready(it) as LibraryContent<T> }
+            .distinctUntilChanged()
+            .flowOn(defaultDispatcher)
+}

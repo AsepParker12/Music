@@ -1,0 +1,162 @@
+package com.music.app.core.database.entity
+
+import androidx.room.ColumnInfo
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
+import com.music.app.core.model.AudioFormat
+import com.music.app.core.model.ClipRange
+import com.music.app.core.model.Download
+import com.music.app.core.model.DownloadBatch
+import com.music.app.core.model.DownloadChoices
+import com.music.app.core.model.DownloadFailure
+import com.music.app.core.model.DownloadKind
+import com.music.app.core.model.DownloadOptions
+import com.music.app.core.model.DownloadStatus
+import com.music.app.core.model.VideoFormat
+import com.music.app.core.model.VideoQuality
+
+/** One download asked for - queued, running, or over - with the choices it was asked with. See `Download`. Carried by a backup, as it is. */
+@Serializable
+@Entity(tableName = "downloads")
+data class DownloadEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val url: String,
+    val title: String?,
+    val kind: String,
+    val videoQuality: String,
+    val audioFormat: String,
+    @ColumnInfo(defaultValue = "'QUALITY'") val videoFormat: String = VideoFormat.QUALITY.name,
+    val captions: Boolean,
+    val skipSponsors: Boolean,
+    val status: String,
+    val error: String?,
+    val createdAt: Long,
+    val formatId: String? = null,
+    val clipStart: Long? = null,
+    val clipEnd: Long? = null,
+    @ColumnInfo(defaultValue = "0") val splitChapters: Boolean = false,
+    val commandArguments: String? = null,
+    val failure: String? = null,
+    val thumbnailUrl: String? = null,
+    val uploader: String? = null,
+    val site: String? = null,
+    val durationSeconds: Long? = null,
+    /** Every file it saved, one path a line. */
+    @ColumnInfo(defaultValue = "''") val savedPaths: String = "",
+    @ColumnInfo(defaultValue = "0") val sizeBytes: Long = 0,
+    val finishedAt: Long? = null,
+    val startAt: Long? = null,
+    val audioLanguage: String? = null,
+    @ColumnInfo(defaultValue = "0") val subtitlesAsFile: Boolean = false,
+    /** The captions picked, one code a line - none while empty, left to the choices while null. */
+    val subtitleLanguages: String? = null,
+    @ColumnInfo(defaultValue = "0") val savesAsSong: Boolean = false,
+    val song: String? = null,
+    /** No longer read: a sound always has its cover in its file now. Kept, as users' databases have it. */
+    @ColumnInfo(defaultValue = "1") val embedsCover: Boolean = true,
+    @ColumnInfo(defaultValue = "0") val savesCover: Boolean = false,
+    /** The [DownloadBatch] it was queued in - its key and its title - null for one link alone. */
+    val batchKey: String? = null,
+    val batchTitle: String? = null,
+    @ColumnInfo(defaultValue = "0") val downloadsAgain: Boolean = false,
+    /** What the browser it was found in sent for it, one `Name: value` a line - null for a link given. */
+    val requestHeaders: String? = null,
+    /** The name the user gave its file, without its extension - null for the file name template's. */
+    val fileName: String? = null,
+    /** The video's further sounds embedded beside its own, one language code a line - null for none. */
+    val audioLanguages: String? = null,
+)
+
+fun DownloadEntity.toDomain() = Download(
+    id = id,
+    url = url,
+    title = title,
+    choices = DownloadChoices(
+        kind = enumOr(kind, DownloadKind.VIDEO),
+        videoQuality = enumOr(videoQuality, VideoQuality.P1080),
+        audioFormat = enumOr(audioFormat, AudioFormat.ORIGINAL),
+        videoFormat = enumOr(videoFormat, VideoFormat.QUALITY),
+        captions = captions,
+        skipSponsors = skipSponsors,
+        audioLanguage = audioLanguage,
+        subtitlesAsFile = subtitlesAsFile,
+        savesAsSong = savesAsSong,
+        savesCover = savesCover,
+    ),
+    options = DownloadOptions(
+        formatId = formatId,
+        clip = if (clipStart != null && clipEnd != null) ClipRange(clipStart, clipEnd) else null,
+        splitChapters = splitChapters,
+        commandArguments = commandArguments,
+        subtitleLanguages = subtitleLanguages?.lines()?.filter(String::isNotEmpty),
+        song = song,
+        downloadsAgain = downloadsAgain,
+        requestHeaders = requestHeaders?.lines().orEmpty().mapNotNull { line ->
+            line.split(": ", limit = 2).takeIf { it.size == 2 }?.let { (name, value) -> name to value }
+        }.toMap(),
+        fileName = fileName,
+        audioLanguages = audioLanguages?.lines()?.filter(String::isNotEmpty).orEmpty(),
+    ),
+    // One running as the app was last stopped never finished: it is taken up again.
+    status = enumOr(status, DownloadStatus.QUEUED).let { if (it == DownloadStatus.RUNNING) DownloadStatus.QUEUED else it },
+    error = error,
+    failure = failure?.let { enumOr(it, DownloadFailure.FAILED) },
+    createdAt = createdAt,
+    thumbnailUrl = thumbnailUrl,
+    uploader = uploader,
+    site = site,
+    durationSeconds = durationSeconds,
+    savedPaths = savedPaths.lines().filter(String::isNotEmpty),
+    sizeBytes = sizeBytes,
+    finishedAt = finishedAt,
+    startAt = startAt,
+    batch = if (batchKey != null && batchTitle != null) DownloadBatch(batchKey, batchTitle) else null,
+)
+
+/** A new download of [url] with [choices] and [options], queued - to start at [startAt], or as soon as it can. */
+fun queuedDownload(
+    url: String,
+    title: String?,
+    thumbnailUrl: String?,
+    uploader: String?,
+    choices: DownloadChoices,
+    options: DownloadOptions,
+    startAt: Long?,
+    createdAt: Long,
+    batch: DownloadBatch?,
+) = DownloadEntity(
+    url = url,
+    title = title,
+    kind = choices.kind.name,
+    videoQuality = choices.videoQuality.name,
+    audioFormat = choices.audioFormat.name,
+    videoFormat = choices.videoFormat.name,
+    captions = choices.captions,
+    skipSponsors = choices.skipSponsors,
+    status = DownloadStatus.QUEUED.name,
+    error = null,
+    createdAt = createdAt,
+    formatId = options.formatId,
+    clipStart = options.clip?.startSeconds,
+    clipEnd = options.clip?.endSeconds,
+    splitChapters = options.splitChapters,
+    commandArguments = options.commandArguments,
+    thumbnailUrl = thumbnailUrl,
+    uploader = uploader,
+    startAt = startAt,
+    audioLanguage = choices.audioLanguage,
+    subtitlesAsFile = choices.subtitlesAsFile,
+    subtitleLanguages = options.subtitleLanguages?.joinToString("\n"),
+    savesAsSong = choices.savesAsSong,
+    song = options.song,
+    savesCover = choices.savesCover,
+    batchKey = batch?.key,
+    batchTitle = batch?.title,
+    downloadsAgain = options.downloadsAgain,
+    requestHeaders = options.requestHeaders.takeIf { it.isNotEmpty() }?.entries?.joinToString("\n") { (name, value) -> "$name: $value" },
+    fileName = options.fileName,
+    audioLanguages = options.audioLanguages.takeIf { it.isNotEmpty() }?.joinToString("\n"),
+)
+
+private inline fun <reified T : Enum<T>> enumOr(name: String, default: T): T = enumValues<T>().firstOrNull { it.name == name } ?: default

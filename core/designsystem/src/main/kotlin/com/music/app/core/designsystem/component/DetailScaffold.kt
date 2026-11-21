@@ -1,0 +1,498 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
+package com.music.app.core.designsystem.component
+
+import androidx.compose.animation.core.animate
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.GenericShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroup
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.dp
+import com.music.app.core.designsystem.component.fastscroll.FastScroller
+import com.music.app.core.designsystem.component.header.CollapsingHeaderState
+import com.music.app.core.designsystem.component.header.collapsingHeaderDrag
+import com.music.app.core.designsystem.component.screen.PlayingRow
+import com.music.app.core.designsystem.component.screen.indexOfKey
+import com.music.app.core.designsystem.component.screen.sectionFrom
+import com.music.app.core.designsystem.component.screen.scrollBackToTop
+import com.music.app.core.designsystem.component.screen.scrollToRow
+import com.music.app.core.designsystem.icon.MusicIcons
+import com.music.app.core.designsystem.theme.MusicComponentStyle
+import com.music.app.core.designsystem.theme.buttonPressShapes
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+
+/**
+ * How far a detail screen's header has collapsed into its bar - a [CollapsingHeaderState], collapsing
+ * through the header's height less the bar's, and set aside out of the way while the screen is searched.
+ */
+@Stable
+class DetailHeaderState internal constructor(
+    val listState: LazyListState,
+    private val scope: CoroutineScope,
+) {
+    internal val header = CollapsingHeaderState(scope)
+
+    internal var headerHeightPx: Int by header::heightPx
+    internal var barHeightPx: Int by header::pinnedPx
+
+    /**
+     * How far the header has stepped aside for a search, 0 in place and 1 collapsed out of the way -
+     * apart from the scroll's collapse, so stepping aside never changes what scrolling did.
+     */
+    private var asideFraction by mutableFloatStateOf(0f)
+
+    /** The header's height less the bar's: how far it collapses before the list moves. */
+    internal val collapseRangePx: Float
+        get() = header.rangePx
+
+    /** How far the header is shown collapsed: as far as scrolling took it, or further while stepping aside. */
+    internal val collapsedOffsetPx: Float
+        get() = (1 - asideFraction) * header.offsetPx + asideFraction * collapseRangePx
+
+    /** [collapsedOffsetPx] as a fraction: 0 with the header shown open, 1 once it is out of the way. */
+    internal val shownCollapse: Float
+        get() = if (collapseRangePx == 0f) 0f else collapsedOffsetPx / collapseRangePx
+
+    /**
+     * How far scrolling has collapsed the header into the bar, 0 when open and 1 when collapsed - what
+     * the bar reveals Play and Shuffle by. A search setting the header aside leaves it as it was: the bar
+     * turns into the search as the header goes, and one on its way out must not reveal them in passing.
+     */
+    val collapse: Float
+        get() = header.fraction
+
+    /**
+     * How much of the list lies past the screen's bottom with the header at rest: the list is as tall as the room
+     * below the collapsed bar, so it reaches as far past the bottom as the header stands open. Changes only as the
+     * header passes half-way, so whatever is built from it is not built again on every frame of a collapse.
+     */
+    val listOverhangPx: Float by derivedStateOf { if (shownCollapse < 0.5f) collapseRangePx else 0f }
+
+    /** Whether the header is held collapsed out of the way - see [DetailScaffold]'s `isHeaderAside`. */
+    internal var isHeaderAside = false
+        private set
+
+    /**
+     * Takes the list back to its first row with the header opening as it goes - the screen as it opened.
+     * A scroll made here passes no nested scroll to the header, so it is opened alongside; while set aside
+     * for a search, it stays aside.
+     */
+    internal suspend fun scrollToTop() = coroutineScope {
+        if (!isHeaderAside) launch { header.animateTo(collapsed = false) }
+        listState.scrollBackToTop()
+    }
+
+    /**
+     * Brings the row at [index] to the top of the list with the header collapsing as it goes, as scrolling
+     * there by hand would - out of the way, where a search has set it aside already.
+     */
+    internal suspend fun scrollToRow(index: Int) = coroutineScope {
+        if (!isHeaderAside) launch { header.animateTo(collapsed = true) }
+        listState.scrollToRow(index)
+    }
+
+    internal val nestedScrollConnection = header.nestedScrollConnection(isEnabled = { !isHeaderAside })
+
+    /**
+     * Collapses a header left standing open over a list that has scrolled away from its top. A row's drag scrolls the
+     * list alone, as the header moving would move the row out from under the finger, so this waits for the finger to lift.
+     */
+    internal fun catchUpWithList() {
+        val isListScrolled = listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
+        if (isListScrolled && !isHeaderAside) header.settleCollapsed()
+    }
+
+    /** Where the list stood when the header was set aside, to be put back after. */
+    private var listPositionBeforeAside: Pair<Int, Int>? = null
+
+    private var asideJob: Job? = null
+
+    /**
+     * Slides the header out of the way or back, the way a settle moves it. Only the list jumps: to its
+     * top as the header goes, and back to where it was as the header returns.
+     */
+    internal fun updateHeaderAside(isAside: Boolean) {
+        if (isAside == isHeaderAside) return
+        isHeaderAside = isAside
+        asideJob?.cancel()
+        asideJob = scope.launch {
+            animate(asideFraction, if (isAside) 1f else 0f) { value, _ -> asideFraction = value }
+        }
+        if (isAside) {
+            listPositionBeforeAside = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+            listState.requestScrollToItem(0)
+        } else {
+            val (index, offset) = listPositionBeforeAside ?: return
+            listPositionBeforeAside = null
+            listState.requestScrollToItem(index, offset)
+        }
+    }
+}
+
+/** A [DetailHeaderState] for a screen opening with its header open and its list at the top. */
+@Composable
+fun rememberDetailHeaderState(listState: LazyListState = rememberLazyListState()): DetailHeaderState {
+    val scope = rememberCoroutineScope()
+    return remember(listState, scope) { DetailHeaderState(listState, scope) }
+}
+
+/** Auxio's `layout_collapseParallaxMultiplier`: how much of the collapse the header is held back by. */
+private const val HeaderParallax = 0.85f
+
+/** How much smaller the header gets on its way out - Auxio's `0.2 / (5 / 3)`. */
+private const val HeaderShrink = 0.12f
+
+/**
+ * A detail screen: a header that collapses into the [bar] as its [content] scrolls up - Auxio's
+ * `fragment_detail`, a `CollapsingToolbarLayout` in an `AppBarLayout` over a list.
+ *
+ * Laid out as Auxio's is. The list is as tall as the screen below the collapsed bar and starts where
+ * the header ends, so a collapse only moves things - nothing is measured again. The header is held
+ * back by [HeaderParallax] as it goes and cut off at its bottom edge, so it slides out from under
+ * itself; over the first half of the collapse it shrinks and fades away (Auxio's `onOffsetChanged`),
+ * and a divider stays pinned where it ends. Let go part-way, and it settles open or collapsed. The
+ * header can be dragged itself, and a drag that collapses it all the way carries on into the list,
+ * as Auxio's `ContinuousAppBarLayoutBehavior` makes it.
+ *
+ * While [isHeaderAside] - a screen being searched - the header slides collapsed out of the way and stays
+ * so, with the list from its top straight under the bar. When it comes back, the header slides back to
+ * where scrolling had left it and the list is put back exactly where it was.
+ *
+ * [contentKey] is what the list shows. A screen opens at its top, and a list at its top stays there as
+ * its rows arrive or change - see the note in the body.
+ *
+ * [dragSelection], where the list's rows can be selected, lets a long press drag across them. [isReordering] says
+ * whether a row is being dragged to a new place. Either way the header holds still until the finger lifts - see
+ * [DetailHeaderState.catchUpWithList].
+ *
+ * [playingKey] is the key of the row the list marks as playing, if any - which the screen's scroll button
+ * offers a way to while it is off screen, showing the playing bars while [isPlaying]: see
+ * [com.music.app.core.designsystem.component.screen.PlayingRow].
+ *
+ * [sectionOfKey], where the list is sorted into sections, names the section of a row by its key - what the fast
+ * scroller's popup shows for the rows on screen, passing over a heading, or a row of another kind, to the next
+ * that has one.
+ */
+@Composable
+fun DetailScaffold(
+    state: DetailHeaderState,
+    bar: @Composable () -> Unit,
+    header: @Composable () -> Unit,
+    isHeaderAside: Boolean,
+    contentKey: Any?,
+    modifier: Modifier = Modifier,
+    dragSelection: DragSelection? = null,
+    isReordering: () -> Boolean = { false },
+    playingKey: () -> Any? = { null },
+    isPlaying: () -> Boolean = { false },
+    sectionOfKey: ((key: Any) -> String?)? = null,
+    content: LazyListScope.() -> Unit,
+) {
+    val listState = state.listState
+    // Found among the rows [content] lays out, and found again only as they or the playing row change.
+    val playingRow = remember(content, playingKey, isPlaying) {
+        derivedStateOf { playingKey()?.let(content::indexOfKey)?.let { index -> PlayingRow(index, isPlaying()) } }
+    }
+    val barHeight = with(LocalDensity.current) { state.barHeightPx.toDp() }
+
+    // A list follows its first visible row wherever that row moves, so rows arriving above it - an
+    // artist's albums, loaded after its tracks - would open the screen scrolled to its tracks. At the
+    // top there is no place to keep, so a list that was at its top when [contentKey] changed stays at
+    // its top; one scrolled anywhere else is left where it is. Where it stood is read as the change
+    // arrives, before the new rows are laid out. The frame the header is set aside or brought back
+    // puts the list where it belongs itself, and is left to it.
+    val wasAtTop = remember(contentKey) {
+        Snapshot.withoutReadObservation {
+            listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
+        }
+    }
+    DisposableEffect(contentKey) {
+        if (wasAtTop && state.isHeaderAside == isHeaderAside) listState.requestScrollToItem(0)
+        onDispose {}
+    }
+
+    DisposableEffect(state, isHeaderAside) {
+        state.updateHeaderAside(isHeaderAside)
+        onDispose {}
+    }
+
+    val latestDragSelection by rememberUpdatedState(dragSelection)
+    val latestIsReordering by rememberUpdatedState(isReordering)
+    LaunchedEffect(state) {
+        snapshotFlow { latestDragSelection?.isDragging == true || latestIsReordering() }
+            .collect { isRowDragged -> if (!isRowDragged) state.catchUpWithList() }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Layout(
+            contents = listOf(
+                {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onSizeChanged { state.headerHeightPx = it.height }
+                            .collapsingHeaderDrag(state.header, list = { listState }, enabled = !isHeaderAside)
+                            // Beneath the bar: the header starts where the bar ends, as Auxio's pads
+                            // itself by the toolbar's height.
+                            .padding(top = barHeight)
+                            .graphicsLayer {
+                                val out = min(state.shownCollapse * 2, 1f)
+                                scaleX = 1 - HeaderShrink * out
+                                scaleY = 1 - HeaderShrink * out
+                                alpha = 1 - out
+                            },
+                    ) {
+                        header()
+                    }
+                },
+                { HorizontalDivider() },
+                {
+                    // Fast scrolling only once the header has collapsed, as Auxio's detail list allows it:
+                    // the thumb moves the list directly, past the header's collapse, which would leave
+                    // the header standing open over a list scrolled somewhere else.
+                    val isCollapsed by remember(state) { derivedStateOf { state.shownCollapse == 1f } }
+                    FastScroller(
+                        listState = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        enabled = isCollapsed,
+                        sectionAt = sectionOfKey?.let { sectionOf -> { index -> content.sectionFrom(index, sectionOf) } },
+                        scrollToTop = state::scrollToTop,
+                        playingRow = { playingRow.value },
+                        scrollToRow = state::scrollToRow,
+                    ) { overscrollEffect ->
+                        CompositionLocalProvider(LocalDragSelection provides dragSelection) {
+                            // The whole room below the header, however few its rows: a drag anywhere in it
+                            // scrolls the list, and so opens and collapses the header.
+                            LazyColumn(
+                                state = listState,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .then(dragSelection?.let(Modifier::dragSelection) ?: Modifier)
+                                    .nestedScroll(state.nestedScrollConnection),
+                                contentPadding = PaddingValues(bottom = LocalBottomContentPadding.current),
+                                overscrollEffect = overscrollEffect,
+                                content = content,
+                            )
+                        }
+                    }
+                },
+            ),
+        ) { (headerMeasurables, dividerMeasurables, listMeasurables), constraints ->
+            val width = constraints.maxWidth
+            val height = constraints.maxHeight
+            val looseWidth = Constraints.fixedWidth(width)
+            val headerPlaceable = headerMeasurables.single().measure(looseWidth)
+            val dividerPlaceable = dividerMeasurables.single().measure(looseWidth)
+            // The room left below the collapsed bar - the most the list can ever be shown in.
+            val listHeight = (height - state.barHeightPx).coerceAtLeast(0)
+            val listPlaceable = listMeasurables.single().measure(Constraints.fixed(width, listHeight))
+
+            layout(width, height) {
+                val collapsed = state.collapsedOffsetPx
+                val headerBottom = (headerPlaceable.height - collapsed).roundToInt()
+                headerPlaceable.placeWithLayer(0, 0) {
+                    translationY = -collapsed * (1 - HeaderParallax)
+                    // Cut off where the collapsing app bar would end: the header's own bottom, moved up
+                    // by the collapse and back down by the parallax.
+                    shape = GenericShape { size, _ ->
+                        addRect(Rect(0f, 0f, size.width, size.height - collapsed * HeaderParallax))
+                    }
+                    clip = true
+                }
+                dividerPlaceable.place(0, headerBottom - dividerPlaceable.height)
+                // Last, so a touch below where the header is cut off is the list's, not the header's.
+                listPlaceable.place(0, headerBottom)
+            }
+        }
+
+        Box(modifier = Modifier.onSizeChanged { state.barHeightPx = it.height }) {
+            bar()
+        }
+    }
+}
+
+/**
+ * A detail screen's header: its cover, what kind of collection it is, its name, a line or two about
+ * it, then Play and Shuffle - Auxio's `detail_header` on a tall screen. [subhead] is left out when
+ * there is nothing to say there, as Auxio hides its line. A collection that can be favorited has its
+ * [favorite] heart at the end of those lines, centred on them - as an options sheet's header has.
+ */
+@Composable
+fun DetailHeader(
+    cover: @Composable () -> Unit,
+    type: String,
+    name: String,
+    subhead: String?,
+    info: String,
+    onPlay: () -> Unit,
+    onShuffle: () -> Unit,
+    playLabel: String,
+    shuffleLabel: String,
+    modifier: Modifier = Modifier,
+    isPlayable: Boolean = true,
+    favorite: FavoriteToggle? = null,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 12.dp),
+    ) {
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { cover() }
+        Spacer(Modifier.size(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = type,
+                    style = MaterialTheme.typography.labelMediumEmphasized,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.titleLargeEmphasized,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (subhead != null) {
+                    Text(
+                        text = subhead,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    text = info,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (favorite != null) MusicFavoriteButton(favorite)
+        }
+        Spacer(Modifier.size(12.dp))
+        DetailPlaybackButtons(
+            onPlay = onPlay,
+            onShuffle = onShuffle,
+            playLabel = playLabel,
+            shuffleLabel = shuffleLabel,
+            isPlayable = isPlayable,
+        )
+    }
+}
+
+/**
+ * The header's Play and Shuffle, sharing its width - Auxio's `MaterialButtonGroup` of a tonal and a
+ * filled button. They press as every labelled button does ([buttonPressShapes]) and hand width to one
+ * another as a bar's buttons do ([MusicComponentStyle.PressedExpandedRatio]).
+ */
+@Composable
+private fun DetailPlaybackButtons(
+    onPlay: () -> Unit,
+    onShuffle: () -> Unit,
+    playLabel: String,
+    shuffleLabel: String,
+    isPlayable: Boolean,
+) {
+    val playInteraction = remember { MutableInteractionSource() }
+    val shuffleInteraction = remember { MutableInteractionSource() }
+    ButtonGroup(
+        overflowIndicator = {},
+        modifier = Modifier.fillMaxWidth(),
+        expandedRatio = MusicComponentStyle.PressedExpandedRatio,
+        horizontalArrangement = Arrangement.spacedBy(MusicComponentStyle.ItemSpacing),
+    ) {
+        customItem(
+            buttonGroupContent = {
+                FilledTonalButton(
+                    onClick = onPlay,
+                    shapes = buttonPressShapes(),
+                    enabled = isPlayable,
+                    interactionSource = playInteraction,
+                    modifier = Modifier
+                        .weight(1f)
+                        .animateWidth(playInteraction),
+                ) {
+                    ButtonContent(icon = { Icon(MusicIcons.Play, contentDescription = null) }, label = playLabel)
+                }
+            },
+            menuContent = {},
+        )
+        customItem(
+            buttonGroupContent = {
+                Button(
+                    onClick = onShuffle,
+                    shapes = buttonPressShapes(),
+                    enabled = isPlayable,
+                    interactionSource = shuffleInteraction,
+                    modifier = Modifier
+                        .weight(1f)
+                        .animateWidth(shuffleInteraction),
+                ) {
+                    ButtonContent(icon = { Icon(MusicIcons.Shuffle, contentDescription = null) }, label = shuffleLabel)
+                }
+            },
+            menuContent = {},
+        )
+    }
+}
+
+@Composable
+private fun ButtonContent(icon: @Composable () -> Unit, label: String) {
+    Box(modifier = Modifier.size(ButtonDefaults.IconSize)) { icon() }
+    Spacer(Modifier.width(ButtonDefaults.IconSpacing))
+    Text(label)
+}

@@ -1,0 +1,135 @@
+<!--
+    The Android 12+ launch screen icon, animated the way Auxio's is - on Music's cookie, in the theme's colours.
+
+    The note is drawn under a border in the cookie's own colour, drawn along its outline and kept inside it. The border
+    starts wide enough to hide the whole note and thins to nothing, so the note fills out evenly from within until it
+    matches its outline. Behind it the cookie grows and turns into place on the very same animator - one timing, one
+    easing - ending 120 degrees back: where the app's first frame takes the mark over, to fly it into the library's bar,
+    turning upright - see LaunchEntrance.
+
+    The mark sits 202 of the icon's 432 units across: its cookie and note drawn in a 288-unit box, as MusicMark draws
+    them, from the design system's own paths - see music_mark.xml - so the two are one mark.
+-->
+<animated-vector xmlns:tools="http://schemas.android.com/tools"
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+    <aapt:attr name="android:drawable">
+        <vector
+            android:width="432dp"
+            android:height="432dp"
+            android:viewportWidth="432"
+            android:viewportHeight="432">
+            <group
+                android:scaleX="0.7013889"
+                android:scaleY="0.7013889"
+                android:translateX="115"
+                android:translateY="115">
+                <!-- The cookie: the 168-unit path at 288/168. -->
+                <group
+                    android:scaleX="1.7142857"
+                    android:scaleY="1.7142857">
+                    <group
+                        android:name="cookie"
+                        android:pivotX="84"
+                        android:pivotY="84"
+                        android:rotation="-165"
+                        android:scaleX="0.7"
+                        android:scaleY="0.7">
+                        <path
+                            android:fillColor="?attr/colorPrimaryContainer"
+                            android:pathData="@string/music_mark_cookie_path" />
+                    </group>
+                </group>
+
+                <group
+                    android:scaleX="6.095"
+                    android:scaleY="6.095"
+                    android:translateX="96.76"
+                    android:translateY="86.4">
+                    <path
+                        android:fillColor="?attr/colorOnPrimaryContainer"
+                        android:pathData="@string/music_mark_note_path" />
+                </group>
+
+                <group
+                    android:scaleX="6.095"
+                    android:scaleY="6.095"
+                    android:translateX="96.76"
+                    android:translateY="86.4">
+                    <clip-path android:pathData="@string/music_mark_note_path" />
+                    <path
+                        android:name="placeholder"
+                        android:fillColor="@android:color/transparent"
+                        android:pathData="@string/music_mark_note_path"
+                        android:strokeColor="?attr/colorPrimaryContainer"
+                        android:strokeWidth="7.2"
+                        android:strokeLineCap="round"
+                        android:strokeLineJoin="round" />
+                </group>
+
+                <!--
+                    The note's placeholder: the note itself, faint, over everything - so the note shows in its own colour,
+                    see-through, before it fills out, and once it has, the faint copy over it changes nothing.
+                -->
+                <group
+                    android:scaleX="6.095"
+                    android:scaleY="6.095"
+                    android:translateX="96.76"
+                    android:translateY="86.4">
+                    <path
+                        android:fillAlpha="0.32"
+                        android:fillColor="?attr/colorOnPrimaryContainer"
+                        android:pathData="@string/music_mark_note_path" />
+                </group>
+            </group>
+        </vector>
+    </aapt:attr>
+    <target android:name="cookie">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator
+                    android:duration="850"
+                    android:interpolator="@interpolator/m3_sys_motion_easing_emphasized_decelerate"
+                    android:propertyName="rotation"
+                    android:startOffset="150"
+                    android:valueFrom="-165"
+                    android:valueTo="-120"
+                    android:valueType="floatType"
+                    tools:ignore="PrivateResource" />
+                <objectAnimator
+                    android:duration="850"
+                    android:interpolator="@interpolator/m3_sys_motion_easing_emphasized_decelerate"
+                    android:propertyName="scaleX"
+                    android:startOffset="150"
+                    android:valueFrom="0.7"
+                    android:valueTo="1"
+                    android:valueType="floatType"
+                    tools:ignore="PrivateResource" />
+                <objectAnimator
+                    android:duration="850"
+                    android:interpolator="@interpolator/m3_sys_motion_easing_emphasized_decelerate"
+                    android:propertyName="scaleY"
+                    android:startOffset="150"
+                    android:valueFrom="0.7"
+                    android:valueTo="1"
+                    android:valueType="floatType"
+                    tools:ignore="PrivateResource" />
+            </set>
+        </aapt:attr>
+    </target>
+    <target android:name="placeholder">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator
+                    android:duration="850"
+                    android:interpolator="@interpolator/m3_sys_motion_easing_emphasized_decelerate"
+                    android:propertyName="strokeWidth"
+                    android:startOffset="150"
+                    android:valueFrom="7.2"
+                    android:valueTo="0"
+                    android:valueType="floatType"
+                    tools:ignore="PrivateResource" />
+            </set>
+        </aapt:attr>
+    </target>
+</animated-vector>

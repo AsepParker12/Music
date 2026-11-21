@@ -1,0 +1,126 @@
+package com.music.app.core.common.notification
+
+import androidx.annotation.StringRes
+import androidx.core.app.NotificationManagerCompat
+import com.music.app.core.common.R
+import com.music.app.core.common.entry.AppEntry
+
+/**
+ * Every notification channel the app posts to, in one place - the list Android's notification settings
+ * show for Music. Each is created once, as the app starts (see [MusicNotifications.createChannels]), so a
+ * feature only names the channel it posts to.
+ *
+ * The ids are the ones each channel was first created under: a user's choices for a channel are kept
+ * against its id, so changing one would reset them.
+ *
+ * [entry] is where pressing a notification on the channel opens the app - see [MusicNotifications.builder].
+ */
+enum class MusicNotificationChannel(
+    val id: String,
+    @StringRes val nameRes: Int,
+    @StringRes val descriptionRes: Int,
+    val importance: Int,
+    val entry: AppEntry,
+) {
+    /** The media notification, whose controls stay in the shade while music plays. */
+    PLAYBACK(
+        id = "music_playback_channel",
+        nameRes = R.string.notification_channel_playback,
+        descriptionRes = R.string.notification_channel_playback_description,
+        importance = NotificationManagerCompat.IMPORTANCE_LOW,
+        entry = AppEntry.NOW_PLAYING,
+    ),
+
+    /** A new version is out - the one channel that is meant to be noticed. */
+    UPDATE_ALERTS(
+        id = "update_notification_channel",
+        nameRes = R.string.notification_channel_update_alerts,
+        descriptionRes = R.string.notification_channel_update_alerts_description,
+        importance = NotificationManagerCompat.IMPORTANCE_DEFAULT,
+        entry = AppEntry.UPDATES,
+    ),
+
+    /** An update's APK downloading, then ready to install. */
+    UPDATE_DOWNLOAD(
+        id = "app_update",
+        nameRes = R.string.notification_channel_update_download,
+        descriptionRes = R.string.notification_channel_update_download_description,
+        importance = NotificationManagerCompat.IMPORTANCE_LOW,
+        entry = AppEntry.UPDATES,
+    ),
+
+    /** A rescan of the device's music, while it runs. */
+    LIBRARY_SCAN(
+        id = "library_scan",
+        nameRes = R.string.notification_channel_library_scan,
+        descriptionRes = R.string.notification_channel_library_scan_description,
+        importance = NotificationManagerCompat.IMPORTANCE_LOW,
+        entry = AppEntry.STORAGE,
+    ),
+
+    /** An auto-tag run looking tracks up or saving them, while it works. */
+    AUTO_TAG(
+        id = "auto_tag",
+        nameRes = R.string.notification_channel_auto_tag,
+        descriptionRes = R.string.notification_channel_auto_tag_description,
+        importance = NotificationManagerCompat.IMPORTANCE_LOW,
+        entry = AppEntry.AUTO_TAG,
+    ),
+
+    /** A backup or a restore the user started, while it runs. */
+    BACKUP(
+        id = "backup",
+        nameRes = R.string.notification_channel_backup,
+        descriptionRes = R.string.notification_channel_backup_description,
+        importance = NotificationManagerCompat.IMPORTANCE_LOW,
+        entry = AppEntry.BACKUP,
+    ),
+
+    /** A link downloading, then saved or failed. */
+    DOWNLOADS(
+        id = "downloads",
+        nameRes = R.string.notification_channel_downloads,
+        descriptionRes = R.string.notification_channel_downloads_description,
+        importance = NotificationManagerCompat.IMPORTANCE_LOW,
+        entry = AppEntry.DOWNLOADS,
+    ),
+
+    /** The one notification kept while any download runs, which lets the download service carry on in the background. */
+    DOWNLOAD_SERVICE(
+        id = "download_service",
+        nameRes = R.string.notification_channel_download_service,
+        descriptionRes = R.string.notification_channel_download_service_description,
+        importance = NotificationManagerCompat.IMPORTANCE_LOW,
+        entry = AppEntry.DOWNLOADS,
+    ),
+}
+
+/** Every notification's id, in one place so no two features ever post under the same one. */
+object MusicNotificationId {
+    const val PLAYBACK = 888
+    const val UPDATE_DOWNLOAD = 4200
+    const val UPDATE_DOWNLOAD_RESULT = 4201
+    const val LIBRARY_SCAN = 4300
+    const val AUTO_TAG = 4400
+    const val BACKUP = 4500
+    const val BACKUP_PAUSED = 4501
+    const val BACKUP_FAILED = 4502
+    const val DOWNLOAD = 4600
+    const val DOWNLOADER = 4700
+    const val UPDATE_AVAILABLE = 9999
+
+    /** The id of download [downloadId]'s own notification, while it runs. */
+    fun download(downloadId: Long): Int = DOWNLOADS_FROM + (downloadId % DOWNLOADS_COUNT).toInt()
+
+    /** The id of download [downloadId]'s notification once it is paused from its own. */
+    fun downloadPaused(downloadId: Long): Int = DOWNLOADS_PAUSED_FROM + (downloadId % DOWNLOADS_COUNT).toInt()
+
+    /** The id of the notification saying download [downloadId] was saved, or failed - each download's its own. */
+    fun downloadResult(downloadId: Long): Int = DOWNLOADS_RESULT_FROM + (downloadId % DOWNLOADS_COUNT).toInt()
+
+    /** Where the downloads' own ids start, clear of every id above. */
+    private const val DOWNLOADS_FROM = 100_000
+    private const val DOWNLOADS_PAUSED_FROM = 200_000
+    private const val DOWNLOADS_RESULT_FROM = 300_000
+    private const val DOWNLOADS_COUNT = 100_000
+}

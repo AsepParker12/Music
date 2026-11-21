@@ -1,0 +1,721 @@
+# Changelog
+
+All notable changes to Music are listed here, newest first.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each release's full notes are on its [GitHub release page](https://github.com/AsepParker12/Music/releases).
+
+## [Unreleased]
+
+## [1.9.1] - 2026-11-20
+
+### Added
+
+- Add Shields, browser settings and sign-ins for downloads.
+- Read videos' details again and name sites by their link.
+- Pause and resume running downloads, rename saved files.
+- Mark places on the seek bar, and edit a video's details.
+
+### Changed
+
+- Move text fields and sliders to Material's state-based APIs.
+
+## [1.9.0] - 2026-11-18
+
+### Added
+
+- Add SharedLinkActivity for handling shared links.
+- Add rename action for tracks and playlists.
+- Add video progress line and subtitle font customization.
+- Remember the last cover colour across launches.
+- Restyle settings rows and add MusicSwitch.
+- Ask for one storage permission covering all file access.
+- Download and install updates automatically.
+- Copy a subtitle track's text with a long press.
+- Split download settings into pages and add yt-dlp options.
+- Adopt expressive motion and restyle rows, tabs and dialogs.
+- Add first-launch setup and an animated launch entrance.
+- Redesign the library's header, tabs and list tools.
+- Keep a video's upload date, views and likes and show them.
+- Check transcription keys and show what each service has left.
+- Add an in-app browser that hands its downloads over.
+- Record which device made each backup.
+- Keep a control's corners round against its container's edge.
+- Show the downloader's download in a notification.
+- Let a restore leave out parts of the library.
+- Open the lyrics with a tap on the cover.
+- Choose the mini player's button and rework its swipe.
+- Move a queue row with a long press instead of a handle.
+- Hand the sheet's bar over to its content, and fade the screen under the mini player.
+- Rework the restore step and the steps' buttons.
+
+### Changed
+
+- The notification, widgets and floating window use the players' own icons.
+- A row's options button shows a vertical more icon.
+- Unify player icons with MusicIcons design system.
+- Restructure with multi-part transfer layer.
+- Tidy picker and options plumbing.
+
+### Fixed
+
+- The player's top buttons no longer crowd the status bar or a notch.
+- Use middle frame for video covers instead of first frame.
+- Pick a non-dark frame for video covers.
+- Step the FABs aside at a list's end instead of keeping room.
+- Show and stop an automatic backup from the backup screen.
+- Take in resume positions a restore writes.
+- Wait longer for the first frame before dropping the launch screen.
+
+## [1.8.2] - 2026-11-13
+
+### Added
+
+- Download a video's subtitles alone, as SubRip files, in any of its languages or translated.
+- Captions from TikTok, Facebook, Bluesky, LinkedIn, Reddit and Snapchat Spotlight, for subtitles alone or in the video.
+- Transcribe a video's speech into subtitles with your own free Supadata or Groq key, the service picked in Downloads settings.
+- Pause and resume downloads, each with a notification of its own, and a playlist's videos listed together.
+- Play a video or song while it is still downloading.
+- Every download keeps a log, open from its sheet however it ended, and saved subtitles can be copied from theirs.
+- Downloads already in your library are found before they are fetched again, with Download anyway to save them all the same.
+- Rename a track's file, move it to another folder, or convert it to another format from the tag editor.
+- Backups carry your download history, saved commands, watched channels, sign-in cookies and download archive.
+- Backups carry how often each moment of your videos was watched.
+- A Downloads button on the library, above quick play.
+
+### Changed
+
+- The video player's rotation button holds the screen as it stands first, then turns it.
+
+### Fixed
+
+- A library list's section titles no longer lag behind its rows as they change.
+- A video played as audio keeps track of where it is, and opens in the video player from there.
+- Where a video was left is saved as it plays, so it is not lost if the app is closed.
+- Facebook videos are downloaded with their picture, not as sound alone.
+- The video player's seek bar no longer shifts as the times count.
+
+## [1.8.1] - 2026-11-11
+
+### Added
+
+- YouTube links read at once by the app itself, with yt-dlp used only where it is needed.
+- Download photos and videos from X, TikTok, Instagram, Reddit, Threads, Bluesky, Facebook, LinkedIn, Pinterest and Telegram posts, and from a direct link to a file.
+- A link shows its picture, title and channel before it is downloaded, as audio, as video or with its options.
+- Download options: the format, a clip of the video, a file per chapter, a saved yt-dlp command, and a later start.
+- Watch a channel or playlist, and have every new video on it downloaded.
+- Downloads settings: how many at once, Wi-Fi only, the folder, file names, a proxy, a speed limit and cookies from signing in.
+- A yt-dlp terminal, and saved yt-dlp commands.
+- Decode with FFmpeg behind the device's hardware decoders.
+- Choose between a video format for sharing and one for quality.
+- Delete a selection from the device from the top bar.
+- Snap the scrub to where the video is.
+- Redesign downloads and save songs with tags, cover and lyrics.
+- Choose the app's language in Settings, under Appearance.
+
+### Changed
+
+- Move the settings rows into the design system.
+- Downloads run in the background, and can be cancelled from their notification.
+- Downloads open from Settings instead of the library's top bar.
+- Drop the cover picture option's summary.
+- Icons are drawn in one style throughout the app.
+- Most played and Recently played draw the same cover in the list and on their own screen.
+
+### Fixed
+
+- Let a scrub go on the frame its preview showed.
+- Index video extras by the track each video is saved as.
+- Selecting playlists no longer offers to delete their songs from the device.
+- Delete appears once while selecting in the library, on the top bar.
+- The Backup screen tells that Google Drive is disconnected in its own words again.
+- Quick download no longer crashes when a link is shared to it.
+
+## [1.8.0] - 2026-11-09
+
+### Added
+
+- A volume drag that boosts past the device's loudest, up to 200%.
+- A fast scroller on every scrolling screen, naming the section it is in.
+- A Most replayed graph over the seek bar while scrubbing.
+- Play a file opened from another app in a popup over it.
+- Send feedback from Settings, and report a crash the next time the app opens.
+- Download from a link with yt-dlp, the video's chapters and Most replayed kept in its file.
+
+### Fixed
+
+- End a selection only once its action is done.
+
+## [1.7.0] - 2026-11-08
+
+### Added
+
+- Choose which files to restore from Google Drive by folder, with how many and how large they are.
+- Try again on a failed restore, which picks up where it stopped.
+- Shuffle and repeat say which mode they are on as they change.
+- Sort collections by length, plays and when they were added.
+- Tap the time at the end of the seek bar to see the whole length instead of the time left.
+- Tap what the player is playing from to open it.
+- Shuffle and repeat in the video player.
+
+### Changed
+
+- Restored files appear as the newest in the library, in the order they were added on the old device.
+- Restoring downloads several files at once, and a file that fails no longer stops the others.
+- A redesigned music player, matching the video player.
+- A redesigned video player, matching the music player.
+- The players' controls press together as button groups, and a control that is on is shown squared.
+- Lyrics you remove or change yourself are no longer looked up and put back.
+- Clearer names for editing a track's info, its lyrics and a playlist.
+
+### Fixed
+
+- Copying shows a confirmation on systems that do not show one themselves.
+- A long name no longer stretches the header of an options sheet.
+- Long titles in another language scroll the way it reads.
+- Next no longer flickers back while a track repeats, and skipping past either end of the queue goes round to the other.
+- Albums show their year, and follow a date edited in Music.
+
+## [1.6.19] - 2026-11-06
+
+### Added
+
+- The default player shows the lyrics line playing beneath the title, and opens the lyrics from it.
+- Search for lyrics that were not found, from the lyrics and the player.
+
+### Changed
+
+- Scrubbing a video shows its frames sooner, and a long film's first scrub no longer holds the screen up.
+
+## [1.6.18] - 2026-11-06
+
+### Added
+
+- Repeat and shuffle on the video player's queue, kept apart from the music's.
+- The equalizer in the video player's menu and in Playback settings.
+- Arabic lyrics can be romanized.
+- An option to show romanized lyrics without their original script.
+- A switch for Japanese romanization once its dictionary is downloaded.
+- Playlists and Most played show how many of their items are videos.
+- A setting to leave videos out of Most played.
+- Videos can be added to playlists from Add tracks, and are matched when an M3U is imported.
+- The library's tabs can be reordered by dragging them along the tab strip or in Library tabs.
+- Selected tracks in a playlist can be moved together by long pressing one of them and dragging.
+- Search in Settings, with recent searches.
+- One shared settings row, its ends lined up down every list.
+
+### Changed
+
+- The video player's play and skip buttons stand on a dark ground.
+- Missing lyrics are looked for on the web by default.
+- A video's options show only what applies to a video.
+
+### Fixed
+
+- The app no longer crashes when the video player is opened and closed quickly.
+- The top bar's overflow menu uses the app's font.
+- A playback notification swiped away no longer comes back by itself.
+- A video played on to from the one before no longer plays on a black screen.
+- In the player, tapping one of several artists while their names scroll opens the artist tapped.
+
+### Removed
+
+- The Continuous play setting, in favour of the video player's repeat modes.
+- The Tab opened at launch setting - the library opens on its first tab.
+
+## [1.6.17] - 2026-11-04
+
+### Added
+
+- Backups keep each video's subtitle file, its timing and which subtitles were picked.
+- Load a subtitle file (SRT, ASS, VTT or TTML) into a video, and it stays with that video from then on.
+- Subtitle files named after a video and lying beside it are found on their own.
+- Choose a video's audio and subtitle tracks, with the next video carrying on in the same languages.
+- Move a subtitle file's lines earlier or later to match the video, remembered for each video.
+- Settings for subtitle size, background and position.
+- A preview of the frame while scrubbing, and how far the video is buffered on the seek bar.
+- A thin progress line along the foot of the screen while the controls are hidden.
+- A video that picks up where it was left says so, with a button to start over.
+- A message when a video can't be played.
+
+### Changed
+
+- The update and theme import dialogs match the rest of the app's dialogs.
+- The video player has a new look, with its queue, speed, tracks and more options in panels beside the picture.
+- Double tap seeks add up as they come, shown by a ripple from the edge tapped.
+- Previous and next take the place of the 10-second buttons in the video player's controls.
+- The video player's messages for speed, fit and rotation appear beneath the top bar, clear of the controls.
+- Every video opens on auto-rotate, with the rotation button's choice lasting until the player closes.
+- Videos play apart from the music, which pauses and waits with its queue untouched.
+- Playing a video as audio moves it to the mini player and closes the video player.
+- A video keeps playing during a scrub and moves only on letting go, with a frame preview from the point reached.
+- Speed, fit, floating window and rotation are on the video player's controls in both orientations.
+- The video player's controls stay hidden as a video opens.
+
+### Fixed
+
+- Every button now presses the same way, in the equalizer, tag and lyrics editors, video player and settings.
+- Double tapping a video no longer makes the controls flash.
+- The video player's loading indicator lines up with the play button.
+- The video player's buttons ripple in a light colour rather than a dark one.
+- In portrait, a video's picture no longer sits under the player's controls.
+
+### Removed
+
+- The message shown when a double tap pauses or resumes a video.
+- The video orientation settings.
+
+## [1.6.16] - 2026-11-03
+
+### Added
+
+- Open the app where each notification belongs.
+- Block screenshots, keeping every window out of screenshots and the recent apps' previews.
+- Pause and clear listening history.
+- Hide collaborators, leaving artists with no album of their own out of the artist lists. They can still be opened.
+- Automatic reloading can be turned off, leaving the library to change only when asked.
+
+### Changed
+
+- Files in Google Drive go under their own names, and Drive knows what kind of file each is.
+- A moved or renamed file is not uploaded again, and one whose tags changed updates its copy in Drive rather than adding another.
+- A restore leaves a file that changed since the backup as it is, rather than adding an older copy beside it.
+- Separate artists parts a credit at every separator, whatever else the library holds, keeping names like "Tyler, The Creator" and "Earth, Wind & Fire" whole.
+- A moved or renamed file always keeps its playlists, plays and place in every list, including one moved by copying it and deleting the original.
+- The queue follows the library: a file that moved goes on playing from where it was at its new place, and a track no longer in the library leaves the queue.
+- These settings now work: Remember pause, Always exit on close, and Headset autoplay.
+
+### Fixed
+
+- Keep button glyphs from being cut by their buttons.
+- The first touch on a video is no longer missed.
+- The app's colours stay as they were while a video plays, rather than changing with it.
+- Credited artists' names in the player read as the rest of the line does, and can still be tapped.
+- Dragging rows to select or reorder scrolls the list at the screen's bottom under an open header.
+- A header left open over a list scrolled by a drag collapses once the finger lifts.
+- A swipe on a detail screen's header flies on as one on its list does.
+- A file Drive holds damaged is found by its checksum and sent again.
+- Old copies in Drive are let go of only once every file of a backup has arrived.
+- Names differing only in invisible marks, spacing or how their letters are encoded are one artist, album or genre.
+- Music files with no title tag are no longer left out of the library: they go by their file name.
+
+### Removed
+
+- The Keep tracks when files move setting, as this is now how the library works.
+- The settings that were never built: Show filename as track title, pausing and clearing search history, and the Behavior screen's copy of Always exit on close.
+
+## [1.6.15] - 2026-10-31
+
+### Added
+
+- A folder explorer: folders open in place, music and videos play as a preview without touching your queue, and Back goes to the folder before.
+- Pick single files, not only folders, to exclude, auto-tag or back up.
+- Open an excluded folder to see and play what it holds.
+- The video player's floating window, entered from its button or by leaving a playing video.
+- Folder view setting: list nested folders separately, or grouped under the top-most one.
+- Keep tracks when files move: a moved or renamed file keeps its playlists and plays (off by default).
+- Pause and resume a backup from its notification, carrying on from the exact byte uploaded.
+- The backup notification shows its progress byte by byte, with the upload speed, as a live update on Android 16.
+- A notification when a backup or restore fails, with Try again.
+
+### Changed
+
+- Each place keeps one backup, the latest, and a backup with nothing new is not written again.
+- A backup goes step by step, each step named, and is saved last.
+
+### Fixed
+
+- Backing up again after stopping one no longer fails.
+
+## [1.6.14] - 2026-10-30
+
+### Fixed
+
+- Find Drive's folders again once deleted there, or for another account.
+
+## [1.6.13] - 2026-10-30
+
+### Fixed
+
+- Upload a whole library to Google Drive, never the same file twice.
+
+## [1.6.12] - 2026-10-30
+
+### Fixed
+
+- Back up to Google Drive again, and keep it connected while offline.
+
+## [1.6.11] - 2026-10-30
+
+### Fixed
+
+- Pick any Google account for Drive, and show the one connected.
+
+## [1.6.10] - 2026-10-30
+
+### Added
+
+- Look online for missing lyrics only once turned on.
+- Back up to Google Drive, with the music and videos of the folders you choose.
+
+## [1.6.9] - 2026-10-30
+
+### Added
+
+- Keep plays from chosen collections out of Most played.
+- Swipe right on a lyrics line to play from it.
+- Remove tracks from Recently played and Most played.
+- Tap the lyrics line above the seek bar to open the full lyrics right in the player, instead of in a separate sheet.
+- Back up your playlists, favorites, play history and settings, automatically or by hand, and restore them on any device.
+- Choose between the Default player, with the lyrics in a sheet of their own, and the Immersive one, with the lyrics opening in place.
+
+### Fixed
+
+- Reserve FAB stack height in the list's bottom padding.
+- Drop HyperOS widget registration and resize to 4 cells.
+
+## [1.6.8] - 2026-10-28
+
+### Added
+
+- Draw the widgets in the app's theme colours.
+- Tone cover backgrounds to the theme so its own text reads over them.
+- Open the playing list under the full player, dropping the ⋮ button.
+- Add a setting to keep the playback notification while Music is closed.
+- The lyrics sheet shows when lyrics for the playing track are being looked for online, and fills in by itself the moment they are found.
+- Auto-tag finds accurate tags, covers and lyrics for a whole library, a folder or a selection at once, to review and save together.
+- A play button in the tag editor plays the track whose tags are edited.
+
+### Changed
+
+- The Mini player widget shows the track's title alone, without the artist.
+- Excluded folders are added several at a time from a sheet that sorts them into Music and Videos, and let back in several at a time too.
+- The tag editor's Save is now the screen's button, appearing once there are changes, and Edit lyrics opens the lyrics editor as its own screen.
+- Lyrics lines are timed exactly when their clock is pressed, and the lyrics editor remembers whether it follows the playing line.
+
+### Fixed
+
+- Shuffle and repeat on the home screen widgets no longer grow or get cut off when turned on.
+- The widgets no longer flash "Nothing playing" before showing the last played track as the app starts.
+- The Mini player widget no longer grows tall on Samsung phones.
+- Centre every empty state's message under its title.
+- Tag lookups no longer say "No match found" when Deezer was too busy to answer; they offer to try again instead.
+
+## [1.6.7] - 2026-10-23
+
+### Added
+
+- A Mini player widget, one row tall: the cover, title and artist, with shuffle, previous, play/pause, next and repeat.
+
+### Changed
+
+- The widget picker previews Music's widgets in its own colours.
+
+## [1.6.6] - 2026-10-23
+
+### Added
+
+- Rank typo-tolerant search results and find tracks by their lyrics.
+- Separate the artists of a credit naming several.
+- Add a Now Playing home screen widget.
+
+### Changed
+
+- Smoother screen transitions and snappier button presses.
+
+### Fixed
+
+- Let the scroll button take a hidden quick play button's place.
+- Keep the top bar in place and let back only close the keyboard.
+- Show every track property at once.
+- Read UTF-8 tags that claim to be Latin-1 as written.
+
+## [1.6.5] - 2026-10-09
+
+### Added
+
+- Add full-screen video player cloned from PLAYit.
+- Manage video-watching lifecycle and auto-open the video player.
+- Pass a per-screen flag to the player overlay.
+- Let every collection be arranged by hand and keep new tracks in order.
+- Unify every screen's FABs in one stack and scroll to the playing row.
+- Collapse the shortcuts on scroll as a detail header does.
+- Let albums, artists, genres, folders and playlists be favorited.
+- Hold the first frame until the theme and custom font are ready.
+
+### Changed
+
+- Scope PlayerViewModel to a PlaybackSpace.
+- Move bottom sheets into a sheet package and fix their drag height.
+- Unify overscroll triggers in one edge-aware system.
+
+### Fixed
+
+- Decode HTML entities in SimpMusic lyrics.
+
+## [1.6.4] - 2026-10-05
+
+### Added
+
+- Rebuild the equalizer to match ArchiveTune exactly.
+
+### Changed
+
+- Restrict "Default" option label to appearance choices.
+- Merge the lyrics sheet background into the player's.
+
+### Fixed
+
+- Refresh the library immediately on return to foreground.
+- Open the queue sheet already scrolled to the current track.
+- Delay the loader shown while skipping tracks.
+
+## [1.6.3] - 2026-10-01
+
+### Added
+
+- A synced lyrics editor - time each line as it is sung, nudge or type its time, and bring lyrics in from the web, the clipboard or a file.
+- Find missing lyrics - the playing, next and previous tracks get lyrics from the web written into their files when they have none.
+
+### Changed
+
+- Lyrics are read from and saved into each file, so they are the same wherever the file plays.
+
+### Fixed
+
+- Tapping outside a dialog closes it.
+- Pressing an option in a dialog highlights the whole width of the dialog.
+
+### Removed
+
+- The lyrics cache and queue lyrics preloading, with their settings.
+
+## [1.6.2] - 2026-10-01
+
+### Added
+
+- Add multiple new online lyrics sources.
+- Add video library support to music player.
+- Show all videos as a flat list in the Videos tab.
+- Pick excluded folders from library, not the system picker.
+- Quick play - the library button and the launcher shortcut play one chosen source, shuffled or in order, and a long press on the button plays another.
+- A Custom lyrics sync offset, typed in exact milliseconds.
+- A spinner covers the screen while tags are saved, and the editor closes once they are.
+
+### Changed
+
+- Use Android's cached video thumbnails instead of decoding frames.
+- Remove sticky header pinning from section components.
+- Every setting's chooser lists the option it starts at first, as Default.
+- Settings that only apply while another is set some way stay on screen, faded, instead of disappearing.
+- Repeat, shuffle and favorite are offered to every media control - the notification, the system's media controls, a car or a watch.
+- The lyrics menu looks and behaves like every other options sheet.
+- Saving tags is much faster, and a chosen cover downloads while you edit.
+
+### Fixed
+
+- On a detail screen with only a few tracks, dragging anywhere below them opens and collapses the header.
+- Each track shows its own cover, and a cover changed in a file shows at once.
+- Artists whose tracks sit on another artist's album are listed under their own name.
+- Album years match their tracks' tags and follow every change to them.
+- Saving the tags of the playing track no longer stops playback.
+- The notification and lock screen show a track's new tags as soon as they are saved.
+- Tags written into MP4 and M4A files named as another format now reach the file, and a file damaged that way is repaired on its next save.
+
+### Removed
+
+- The player button colours setting.
+
+## [1.6.1] - 2026-09-28
+
+### Added
+
+- Edit a track's tags from its menu: its best match from Deezer and iTunes applied in one press, every tag editable, a cover from the matches or the gallery, and lyrics from five sources - each showing whether it was synced to a recording as long as the track.
+- Lists stretch past their ends and spring back.
+- Rescanning the library shows its progress in a notification, and says when it is done.
+
+### Changed
+
+- A track counts towards Most played once 80% of it has been played, rather than after 10 seconds, and skipping ahead does not count. Plays started from a headset, the notification or another app count too.
+- Recent lists a track once it actually plays, not when the queue is restored as the app opens.
+- Every section folds away at a press on its heading, smoothly, and a heading held at the top is underlined while its rows scroll beneath it.
+- A newer version is prompted for on whatever screen is open, not only the library.
+- Japanese lyrics romanization downloads its 13 MB dictionary once, from Settings › Lyrics, instead of it coming with every install - Music is now a 5 MB download instead of 20 MB. Anyone who had it on turns it on again there.
+- Music reads in English throughout, including the few labels its components used to show in the phone's language.
+
+### Fixed
+
+- A new release is found as soon as it is out, and a check that failed offline is made again the moment the connection is back.
+- Messages no longer queue up one after another; a new one replaces the last.
+- Music no longer asks for access to music when it already has access to all files.
+
+## [1.6.0] - 2026-09-27
+
+### Added
+
+- Swipe a playlist, or Most played, to the right to play it and to the left to shuffle it.
+- A banner says when the connection is lost, and again when it is back.
+- Pick which build of an update to download - the one made for your phone's processor, or the universal one.
+- The download dialog shows how much has arrived, of how much, and how fast.
+- Show updates on launch, in Settings › Updates, to stop the update sheet opening with the app.
+- Long sections - an album's or a genre's, a release in the changelog, About's contributors - can be collapsed, and their headings stay in view while you scroll them.
+- About shows which build of Music is installed.
+
+### Changed
+
+- The Beta update channel is now Artifact: the alpha, beta and release candidate builds of the next version.
+- About and Updates look like the rest of Settings, and licenses, the changelog and recent commits have screens of their own.
+- Contributors, releases and recent commits open on what was loaded last, offline too, and refresh whenever you are back online.
+- The top bar tints as a list scrolls under it.
+- Downloaded updates are checked before they are installed, so a damaged download is caught.
+
+### Fixed
+
+- The fast scroll thumb no longer jumps on screens with several sections, such as a genre's artists and tracks.
+- Contributors' pictures load.
+- Debug builds are no longer offered updates.
+
+## [1.5.0] - 2026-09-26
+
+### Added
+
+- Theme: System, Light or Dark, and a Black theme while dark.
+- Dynamic colors, which follow the wallpaper recoloured by the playing cover. Turned off, Wallpaper colors, Cover colors and a Color palette can each be chosen instead.
+- A Color palette screen with 68 presets, and a Theme creator for your own palette from four seed colors. Themes can be imported and exported as files.
+- Font: Default (Poppins), System, Inter, or any .ttf you pick.
+- Player background styles: Follow theme, Gradient, Blur, Coloring, Blur gradient, Glow, Glow animated, and Custom, your own image with blur, contrast and brightness.
+- Mini player background styles: Follow theme, Gradient and Glow.
+- Player button colors, Hide player thumbnail, and Swipe to change song, which covers the mini player too.
+- An Updates screen with your version and the latest one, the changelog, and the development branch's recent commits.
+- Update channels: Stable, or Beta for pre-releases as well.
+- Update notifications: a check every few hours, and a notification whose Download starts the update.
+- An About screen with links, open-source licenses, credits and contributors.
+- Storage shows the library database and image cache sizes, rescans the library, and clears the image cache.
+
+### Changed
+
+- The default font is Poppins. System keeps the previous look.
+- Lyrics background style moves from Lyrics to Appearance, and the lyrics follow the player's custom image while it has one.
+- A new version is announced with a sheet showing its release notes, and downloads with a progress dialog.
+- Updates are found from GitHub releases, and download the APK made for your device instead of the universal one.
+
+### Removed
+
+- The Update alerts switch. A new version is announced once per session.
+
+## [1.4.0] - 2026-09-25
+
+### Added
+
+- Shuffle all can play one collection instead of every track: Favorites, or any playlist, artist, album, genre or folder. The launcher's Shuffle all shortcut plays the same.
+- Long press the shuffle button for a menu of All tracks, Favorites, the collection you chose and Other. Picking one makes it the button's source and shuffles it at once.
+- Settings › Playback › Shuffle all plays, choosing All tracks or opening a searchable picker of your playlists, artists, albums, genres or folders. Other in the shuffle menu opens the settings scrolled to it, and highlights it.
+- A scroll to top button on every list: the library tabs, Playlists, every album, artist, genre, folder and playlist screen, the pickers, the settings and the equalizer. On a detail screen it opens the header again as it goes.
+
+### Changed
+
+- The shuffle button is larger, and springs as it shows, hides and opens.
+- The floating buttons stand just above the mini player, or above the navigation bar without one, and move with it as it slides in and out.
+- The floating buttons step aside together while the player is raised, while a list is fast scrolled, and as a list reaches its end.
+
+## [1.3.0] - 2026-09-25
+
+### Added
+
+- Swipe actions on library rows: in an album's, artist's or playlist's screen, swipe a track, album or artist one way to play it next and the other way to add it to the queue.
+- Queue rows swipe too: one way to play next, the other to remove, with an undo.
+- A swipe ticks as it reaches the point where letting go acts, and again if pulled back behind it.
+- Disable animations, Force high refresh rate and Haptics now work. Animations start off on low-memory devices, and the refresh rate row shows the display's fastest rate.
+- Most played is pinned at the top of Playlists once something has been played enough to count.
+- The Playlists shortcut card shows the cover of the playlist listed first.
+
+### Changed
+
+- The queue has no separate reorder mode: every row can be dragged by its handle at any time, shuffled or not, and an undone removal goes back exactly where it was.
+- Round mode now shapes the whole app, not only covers: turned off, every corner is square.
+- Playlists lists only the playlists you made. Favorites and Recent keep their own shortcut cards.
+- Creating a playlist is one New playlist button: start empty, from a folder or from a playlist file, then name it. An empty Playlists screen offers to create one.
+- New defaults, for settings not yet changed: tracks and a playlist's tracks sort newest added first, playlists by last changed, covers are cropped square, the fast scroller's touch area is Narrow, the seek bar is circular, and Rewind before skip back and Stop after current track are off.
+
+### Fixed
+
+- A slightly slanted sideways swipe on the cover or mini player no longer drags the player sheet, and a slanted scroll no longer swipes a list row.
+- A drag the list, sheet or cover has taken is no longer snatched part-way by a row or the sheet, and a claimed drag no longer moves what is underneath it.
+- Swiping past the first or last cover and back now turns to the neighbouring cover.
+- Long pressing the artist under the player's title gives the same haptic as the title.
+- Removing a track from a shuffled queue no longer flashes the queue in its unshuffled order.
+- Importing a playlist file that matches no tracks no longer leaves an empty playlist behind.
+
+## [1.2.0] - 2026-09-25
+
+### Added
+
+- Shuffle all button on the library tabs, and a "Shuffle all" launcher shortcut.
+- Shuffle settings under Playback › Shuffle: Keep shuffle, Reshuffle each time, Remember shuffle order and Shuffle all button.
+- A shuffled queue comes back in the same order after the app is closed.
+- Drag to select, as in a file browser: long press a row and drag across the list to select a range, scrolling at its edges; long press a second row to select everything between the two.
+- Delete from device, for a track, an album, artist, genre or folder, and a selection. With all-files access granted it deletes without Android asking each time; without it, Android's own request asks.
+- Remove from playlist in the menu of a track opened inside a playlist.
+- Settings › Permissions, listing every permission Music uses, what it is for and whether it is allowed, with a tap to grant or change it.
+
+### Changed
+
+- A long press now selects a row rather than toggling it, so it can start a drag.
+- Sorting by date added groups tracks and albums by month rather than by year, and the fast scroller's popup shows the month above the year.
+- Music asks for music and notification access together, in one dialog, when it opens.
+- Every dialog shares one layout: the title and buttons stay in place while long content scrolls, and dialogs keep a sensible width on tablets and in landscape.
+- One picker for adding tracks to a playlist and for choosing where an imported playlist goes.
+- Buttons, icon buttons and connected button groups all tighten to the same corners while pressed, and the shuffle all button follows them.
+- New icons for Import and Export.
+
+### Fixed
+
+- The shuffle all button steps aside when a list's last row reaches it, instead of lists keeping empty room for it at their end.
+- Opening or closing search on a detail screen slides its header out of the way and back to where it was, and no longer flashes Play and Shuffle in the bar.
+- A quick double tap, or opening a screen that is already showing, no longer stacks a second copy of it.
+
+## [1.1.0] - 2026-09-23
+
+### Added
+
+- Playlist editor for a playlist's name and cover: stacked track covers, its first or last track, any track in the library, or an image from the photo picker. Favorites can take a cover too.
+- Fast scroller on every library list, with a popup naming the current section as the sort defines it and a haptic tick as it changes.
+- Fast scroll touch area setting (Narrow, Standard or Wide) under Behavior › Display.
+- Rubber-band swipe on the mini player: it follows the finger to the skip point, ticks, then resists; towards a side with no track it resists from the start.
+- Rubber-band stretch on the player's cover when swiping past the first or last track, instead of not moving at all.
+
+### Changed
+
+- The mini player now floats with an even gap above the end of every list.
+
+### Fixed
+
+- A mini player swipe can be undone before release on the first and last track, and pulling out and snapping back no longer skips.
+
+## [1.0.0] - 2026-09-23
+
+First stable release.
+
+### Added
+
+- Library tabs for tracks, artists, albums, genres and folders, with search, per-list sorting, intelligent sorting, hideable tabs and excluded folders.
+- Detail screens with collapsing headers for albums, artists, genres, folders and playlists.
+- Live library updates when files are added or removed.
+- Multi-select across tabs, and an options sheet on every row.
+- Sharing of any number of tracks without copying files.
+- Playlists: create, rename, delete, create from a folder, custom drag order, M3U import and export, and adding whole collections with a confirmation count.
+- Favorites, Recent and Most played.
+- Mini and full player with swipeable covers, a reorderable queue, and the queue's source collection in the header.
+- Repeat all, repeat one, stop after current track, shuffle, rewind before skip-back, sleep timer and equalizer.
+- Queue and position restore, and resume from a media button.
+- Media notification with shuffle, repeat and favorite controls.
+- Selectable player and seek bar styles.
+- Synced lyrics from embedded LRC, TTML and QRC, with word-by-word highlighting, romanization and preloading.
+- Artwork-based dynamic colours, light and dark themes, composed collection covers, animated launch screen and edge-to-edge layout.
+- In-app updates from GitHub Releases, with an option to check only on request.
+
+[Unreleased]: https://github.com/AsepParker12/Music/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/AsepParker12/Music/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/AsepParker12/Music/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/AsepParker12/Music/compare/v1.1.1...v1.2.0
+[1.1.0]: https://github.com/AsepParker12/Music/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/AsepParker12/Music/releases/tag/v1.0.0

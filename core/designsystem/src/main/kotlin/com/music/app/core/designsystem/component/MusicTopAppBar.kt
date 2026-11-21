@@ -1,0 +1,541 @@
+package com.music.app.core.designsystem.component
+
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.music.app.core.designsystem.R
+import com.music.app.core.designsystem.component.screen.LocalScreenLists
+import com.music.app.core.designsystem.icon.MusicIcons
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+
+/**
+ * One thing a top app bar can do. Whether it is drawn as an icon or as a row in the overflow menu is
+ * the bar's decision rather than the caller's - a screen declares what it offers, and the bar works
+ * out how much of it fits.
+ *
+ * A disabled action is still drawn where it would be, faded and inert, so what a screen offers keeps
+ * one shape whether or not each action can be taken right now.
+ */
+@Immutable
+data class TopBarAction(
+    val label: String,
+    val icon: ImageVector,
+    val enabled: Boolean = true,
+    val onClick: () -> Unit,
+)
+
+/**
+ * What the bar shows while a list has rows selected: how many, what can be done with them, and the
+ * more options button that opens everything else - Auxio's selection toolbar, whose overflow opens
+ * the selection's options sheet rather than a menu. A selection whose [actions] are all there is has no
+ * [onMoreOptions], and no such button.
+ */
+@Immutable
+data class TopBarSelection(
+    val count: Int,
+    val actions: List<TopBarAction>,
+    val onMoreOptions: (() -> Unit)?,
+    val onDismiss: () -> Unit,
+)
+
+/**
+ * What the bar shows while a screen is being searched: the query, in place of the title.
+ *
+ * [closesWithBack] is false for a screen that *is* a search rather than one that grew a search. On
+ * such a screen [onClose] leaves the screen, and leaving a screen is what the system back press
+ * already does - so intercepting back to call [onClose] would have the bar answer a back press by
+ * pressing back, without end. Leaving it unhandled lets the press do what it was going to do.
+ *
+ * [actions] are what stays reachable while searching, laid out as the ordinary bar lays out its own -
+ * none, for a screen whose search needs nothing beside the field.
+ *
+ * The keyboard's search key puts the keyboard away, as it does in any search, and hands [onSearch] what was typed to
+ * act on - for a screen whose search can be acted on as well as followed.
+ *
+ * [hint] is what the empty field says it is for - "Search" unless the field is for something else, as typing a link is.
+ */
+@Immutable
+data class TopBarSearch(
+    val query: String,
+    val onQueryChange: (String) -> Unit,
+    val onClose: () -> Unit,
+    val closesWithBack: Boolean = true,
+    val actions: List<TopBarAction> = emptyList(),
+    val onSearch: (() -> Unit)? = null,
+    val hint: String? = null,
+)
+
+/**
+ * A bar over a header that collapses into it - a detail screen's, Auxio's collapsing toolbar.
+ *
+ * [progress] is how far the header has collapsed, 0 to 1, and is read while drawing so the bar follows
+ * the scroll without recomposing. Over the second half of it the title, and [play] and [shuffle] as
+ * round buttons, fade in and rise into place: what the header showed moves up into the bar.
+ */
+@Immutable
+data class TopBarCollapse(
+    val progress: () -> Float,
+    val play: TopBarAction,
+    val shuffle: TopBarAction,
+)
+
+/** The gap between a title and what stands before it. */
+private val TitleLeadingGap = 12.dp
+
+/** How far below its place a revealed title or button starts - Auxio's `spacing_small`. */
+private val RevealRise = 8.dp
+
+/** How much of [TopBarCollapse.progress] the bar has revealed: none over its first half, all by its end. */
+private fun TopBarCollapse.revealed(): Float = ((progress() - 0.5f) * 2).coerceIn(0f, 1f)
+
+private const val ENTER_SCALE = 0.92f
+private const val EXIT_SCALE = 0.92f
+private const val TRANSITION_MILLIS = 180
+
+/**
+ * What the bar is currently showing.
+ *
+ * The mode carries its own data rather than being an enum read alongside the parameters, because
+ * `AnimatedContent` keeps rendering the outgoing mode for the length of the transition - and by then
+ * the parameter that produced it is already null. Holding the data here means the bar that is
+ * leaving still has everything it needs to draw itself on the way out.
+ */
+private sealed interface BarContent {
+    data class Browsing(
+        val title: String,
+        val subtitle: String?,
+        val actions: List<TopBarAction>,
+    ) : BarContent
+
+    data class Searching(val search: TopBarSearch) : BarContent
+
+    data class Selecting(val selection: TopBarSelection) : BarContent
+}
+
+/**
+ * The only top app bar in the app.
+ *
+ * It has three modes - ordinary, searching, and a context bar for when a list has a selection - and
+ * cross-fades between them with a slight scale, so a change reads as one bar changing its mind
+ * rather than bars swapping places. Every mode is a `TopAppBar` of identical height, so nothing
+ * around the bar moves while it transitions.
+ *
+ * It lifts - tinted as Material's lift-on-scroll tints it - once the screen's list has scrolled from its
+ * top: see [topBarBackground]. Over a header that collapses into it - [collapse], a detail screen's - it
+ * lifts the same way, as its list only scrolls once the header is out of the way. A bar standing at the
+ * top of a larger section that lifts as one - the library's, with its shortcuts and tabs - sets
+ * [drawsBackground] false and leaves the background to that section.
+ *
+ * Searching replaces the title rather than sitting beside it, which is what makes it feel like the
+ * bar became the search rather than grew one. A selection outranks a search: if rows get picked
+ * while searching, the context bar is what the user needs to see. Every mode keeps the same
+ * background, so changing mode never repaints the top of the screen a different colour.
+ *
+ * Taking [actions] as data rather than as a slot is what lets the bar overflow: it draws as many as
+ * icons as a platform action bar would on this screen, and folds the remainder into a dropdown only
+ * when there is a remainder - see [visibleActionCount]. A screen that grows a sixth action needs no
+ * layout work to accommodate it, and a screen never decides for itself that an action belongs in the
+ * menu: three actions on a bar with room for three are three icons.
+ *
+ * [titleLeading] stands before the title while browsing - the library's Music mark - [titleStyle] sets a title apart from
+ * the usual - the library's wordmark - and [titleModifier] and [actionsModifier] move the title and the actions on their own
+ * - the library's, arriving with the launch. [onTitleClick] makes the title, with what stands before it, one pressable
+ * target - the library's name opening About.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MusicTopAppBar(
+    title: String,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    titleLeading: (@Composable () -> Unit)? = null,
+    titleStyle: TextStyle? = null,
+    titleModifier: Modifier = Modifier,
+    actionsModifier: Modifier = Modifier,
+    onNavigateBack: (() -> Unit)? = null,
+    actions: List<TopBarAction> = emptyList(),
+    selection: TopBarSelection? = null,
+    search: TopBarSearch? = null,
+    collapse: TopBarCollapse? = null,
+    drawsBackground: Boolean = true,
+    onTitleClick: (() -> Unit)? = null,
+) {
+    val content: BarContent = when {
+        selection != null -> BarContent.Selecting(selection)
+        search != null -> BarContent.Searching(search)
+        else -> BarContent.Browsing(title, subtitle, actions)
+    }
+
+    // Back leaves the mode rather than the screen, which is what both a context bar and a search
+    // field are expected to do. Handling it here means no screen can adopt either and forget it -
+    // except where the mode is the screen and there is no mode to leave, which is what a search
+    // declares by clearing `closesWithBack`. A back that closes the keyboard only closes the keyboard - so
+    // putting it away to see what a search found never ends the search.
+    val searchHandlesBack = search != null && search.closesWithBack
+    KeyboardAwareBackHandler(enabled = selection != null || searchHandlesBack) {
+        selection?.onDismiss?.invoke() ?: search?.onClose?.invoke()
+    }
+
+    // Material's TopAppBar runs its container colour through an animation of its own (for the
+    // scrolled tint), so a theme change would reach the bar a moment after everything around it. The
+    // bars are left transparent and the background is painted here instead, straight from the theme -
+    // and once, behind the transition, so modes cross-fade over one steady background.
+    val barColors = TopAppBarDefaults.topAppBarColors(
+        containerColor = Color.Transparent,
+        scrolledContainerColor = Color.Transparent,
+    )
+
+    AnimatedContent(
+        targetState = content,
+        modifier = if (drawsBackground) modifier.topBarBackground() else modifier,
+        // Keyed on the *mode*, not the value: typing a letter or picking another row must re-render
+        // the bar it is already in, not animate a fresh one in over it.
+        contentKey = { it::class },
+        transitionSpec = {
+            val spec = tween<Float>(durationMillis = TRANSITION_MILLIS)
+            (fadeIn(spec) + scaleIn(spec, initialScale = ENTER_SCALE)) togetherWith
+                (fadeOut(spec) + scaleOut(spec, targetScale = EXIT_SCALE)) using
+                // Every mode is the same height, so there is no size to animate - and not clipping
+                // leaves the outgoing bar whole while it scales.
+                SizeTransform(clip = false)
+        },
+        label = "topAppBarMode",
+    ) { activeContent ->
+        when (activeContent) {
+            is BarContent.Browsing -> TopAppBar(
+                title = {
+                    Row(
+                        modifier = Modifier
+                            .revealedBy(collapse)
+                            .then(if (onTitleClick != null) Modifier.pressableTitle(onTitleClick) else Modifier),
+                        horizontalArrangement = Arrangement.spacedBy(TitleLeadingGap),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        titleLeading?.invoke()
+                        BarTitle(title = activeContent.title, subtitle = activeContent.subtitle, style = titleStyle, modifier = titleModifier)
+                    }
+                },
+                colors = barColors,
+                navigationIcon = {
+                    if (onNavigateBack != null) {
+                        MusicIconButton(
+                            onClick = onNavigateBack,
+                            icon = MusicIcons.ArrowBack,
+                            contentDescription = stringResource(R.string.top_bar_back),
+                        )
+                    }
+                },
+                actions = {
+                    BarActions(actions = activeContent.actions, collapse = collapse, modifier = actionsModifier)
+                },
+            )
+
+            is BarContent.Searching -> TopAppBar(
+                title = { SearchField(search = activeContent.search) },
+                colors = barColors,
+                navigationIcon = {
+                    MusicIconButton(
+                        onClick = activeContent.search.onClose,
+                        icon = MusicIcons.ArrowBack,
+                        contentDescription = stringResource(R.string.top_bar_close_search),
+                    )
+                },
+                actions = {
+                    BarActions(actions = activeContent.search.actions)
+                },
+            )
+
+            is BarContent.Selecting -> TopAppBar(
+                colors = barColors,
+                title = {
+                    BarTitle(
+                        title = stringResource(
+                            R.string.top_bar_selected_count,
+                            activeContent.selection.count,
+                        ),
+                        subtitle = null,
+                    )
+                },
+                navigationIcon = {
+                    MusicIconButton(
+                        onClick = activeContent.selection.onDismiss,
+                        icon = MusicIcons.Close,
+                        contentDescription = stringResource(R.string.top_bar_clear_selection),
+                    )
+                },
+                actions = { SelectionActions(selection = activeContent.selection) },
+            )
+        }
+    }
+}
+
+/**
+ * The background of a top bar - or of a whole top section, a bar with what stands pinned beneath it - tinted
+ * as Material's lift-on-scroll tints it: `surface` at rest, lifting to `surfaceContainer` once the screen's
+ * list has scrolled from its top - the list marked with `screenList`, read here without the screen having
+ * to say anything - or while [isLifted] says so as well, as a header collapsing over the list does.
+ *
+ * Only how lifted it is animates - never the colours themselves. The two are mixed from the theme as it is
+ * on each frame, so a theme change repaints it on the same frame as the rest of the screen; animating the
+ * colour would have chased every step of the theme's own transition, a beat behind it.
+ */
+@Composable
+fun Modifier.topBarBackground(isLifted: () -> Boolean = { false }): Modifier {
+    val lift = rememberTopBarLift(isLifted = isLifted)
+    val colorScheme = MaterialTheme.colorScheme
+    return drawBehind { drawRect(lerp(colorScheme.surface, colorScheme.surfaceContainer, lift())) }
+}
+
+/**
+ * How lifted a top section is, from 0 at rest to 1 lifted - see [topBarBackground] - read as it is drawn. Lifted by the
+ * screen's list leaving its top, or [isLifted], over a short animation; and by [progress] as it goes, frame by frame, with no
+ * animation of its own: a header collapsing lifts the section exactly as far as it has collapsed, never ahead of it.
+ */
+@Composable
+fun rememberTopBarLift(isLifted: () -> Boolean = { false }, progress: () -> Float = { 0f }): () -> Float {
+    val screenLists = LocalScreenLists.current
+    val currentIsLifted by rememberUpdatedState(isLifted)
+    val currentProgress by rememberUpdatedState(progress)
+    val isLiftedNow by remember(screenLists) {
+        derivedStateOf { currentIsLifted() || screenLists?.current?.isScrolled == true }
+    }
+    val liftFraction = animateFloatAsState(targetValue = if (isLiftedNow) 1f else 0f, label = "topBarLift")
+    return remember { { maxOf(liftFraction.value, currentProgress().coerceIn(0f, 1f)) } }
+}
+
+/** A top section's background lifted as far as [lift] says - see [topBarBackground] and [rememberTopBarLift]. */
+@Composable
+fun Modifier.liftedTopBarBackground(lift: () -> Float): Modifier {
+    val colorScheme = MaterialTheme.colorScheme
+    return drawBehind { drawRect(lerp(colorScheme.surface, colorScheme.surfaceContainer, lift())) }
+}
+
+/** A bar's title pressed as one, with no ripple: the title is the bar's name, not a button drawn on it. */
+private fun Modifier.pressableTitle(onClick: () -> Unit): Modifier =
+    clickable(interactionSource = null, indication = null, role = Role.Button, onClick = onClick)
+
+/** Fades and raises the content in as [collapse] reveals it; leaves it be on a bar with no header. */
+private fun Modifier.revealedBy(collapse: TopBarCollapse?): Modifier =
+    if (collapse == null) {
+        this
+    } else {
+        graphicsLayer {
+            val revealed = collapse.revealed()
+            alpha = revealed
+            translationY = RevealRise.toPx() * (1 - revealed)
+        }
+    }
+
+/**
+ * How many of a bar's [actionCount] actions it shows as buttons, the rest going into the overflow
+ * menu - a native action bar's `showAsAction="ifRoom"`, worked out as the platform works it out.
+ *
+ * The bar holds as many buttons as `ActionBarPolicy.getMaxActionButtons` allows for the screen, and
+ * the overflow button is one of them only when something overflows (`ActionMenuPresenter`): actions
+ * that all fit are all shown, with no menu. A collapsing header's Play and Shuffle keep their two
+ * places whether or not they are showing yet, so nothing moves in or out of the menu as the header
+ * collapses.
+ */
+@Composable
+private fun visibleActionCount(actionCount: Int, collapse: TopBarCollapse?): Int {
+    val buttonCount = maxActionButtons() - if (collapse != null) 2 else 0
+    val overflows = actionCount > buttonCount
+    return if (overflows) (buttonCount - 1).coerceIn(0, actionCount) else actionCount
+}
+
+/** The platform's `ActionBarPolicy.getMaxActionButtons`: how many buttons a bar holds on this screen. */
+@Composable
+private fun maxActionButtons(): Int {
+    val configuration = LocalConfiguration.current
+    val width = configuration.screenWidthDp
+    val height = configuration.screenHeightDp
+    return when {
+        configuration.smallestScreenWidthDp > 600 || (width > 960 && height > 720) || (width > 720 && height > 960) -> 5
+        width >= 500 || (width > 640 && height > 480) || (width > 480 && height > 640) -> 4
+        width >= 360 -> 3
+        else -> 2
+    }
+}
+
+/**
+ * A selection's actions, every one an icon, then the more options button - the same group [BarActions]
+ * draws, but with no menu to fold into: the selection's options sheet is where everything else lives.
+ */
+@Composable
+private fun SelectionActions(selection: TopBarSelection) {
+    val moreOptionsLabel = stringResource(R.string.top_bar_more_actions)
+    MusicIconButtonGroup(modifier = Modifier.padding(end = 4.dp)) {
+        selection.actions.forEach { action ->
+            iconButton(icon = action.icon, label = action.label, onClick = action.onClick, enabled = action.enabled)
+        }
+        selection.onMoreOptions?.let { iconButton(icon = MusicIcons.MoreVert, label = moreOptionsLabel, onClick = it) }
+    }
+}
+
+@Composable
+private fun SearchField(search: TopBarSearch) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    // Opening the search is the whole point of the tap, so it takes the keyboard with it rather
+    // than asking for a second tap to start typing.
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    TextField(
+        state = rememberSyncedTextFieldState(search.query, search.onQueryChange),
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(focusRequester),
+        placeholder = { Text(search.hint ?: stringResource(R.string.top_bar_search_hint)) },
+        lineLimits = TextFieldLineLimits.SingleLine,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        onKeyboardAction = {
+            keyboard?.hide()
+            search.onSearch?.invoke()
+        },
+        // Undecorated, so it reads as the bar's title turned editable rather than a field dropped
+        // into the bar.
+        colors = TextFieldDefaults.colors(
+            focusedContainerColor = Color.Transparent,
+            unfocusedContainerColor = Color.Transparent,
+            focusedIndicatorColor = Color.Transparent,
+            unfocusedIndicatorColor = Color.Transparent,
+        ),
+    )
+}
+
+@Composable
+private fun BarTitle(title: String, subtitle: String?, style: TextStyle? = null, modifier: Modifier = Modifier) {
+    val titleStyle = style?.let { LocalTextStyle.current.merge(it) } ?: LocalTextStyle.current
+    if (subtitle == null) {
+        Text(text = title, style = titleStyle, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = modifier)
+        return
+    }
+    Column(modifier = modifier) {
+        Text(text = title, style = titleStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * The bar's actions, as one [MusicIconButtonGroup] rather than loose buttons, so that pressing any of
+ * them is answered by the others giving up the width it grows into - the overflow button included,
+ * which is a button of the row like the rest.
+ *
+ * The group is laid out inside a [Box] so the overflow menu has something to hang from that does not
+ * itself take part in the row: an item of the group would be compressed by its neighbours, and the
+ * menu would move with it.
+ *
+ * Over a collapsing header, [collapse]'s Play and Shuffle lead the row once the header has collapsed
+ * far enough to reveal them: a tonal and a filled button, Auxio's `IconButton.Style.Small.Secondary`
+ * and `.Primary`, fading and rising in. They are buttons of the same group, so they press, and give
+ * way to a press, exactly as every other button in a bar does. Until the reveal starts they are left
+ * out of the row altogether - Auxio's `GONE` - taking no room and no press while the header still
+ * shows its own.
+ */
+@Composable
+private fun BarActions(
+    actions: List<TopBarAction>,
+    collapse: TopBarCollapse? = null,
+    modifier: Modifier = Modifier,
+) {
+    val visibleCount = visibleActionCount(actions.size, collapse = collapse)
+    val overflowed = actions.drop(visibleCount)
+    // Read here rather than inside the group: a group builds its items outside composition, so it
+    // cannot reach a resource itself.
+    val moreActionsLabel = stringResource(R.string.top_bar_more_actions)
+    val overflowMenu = rememberTopBarOverflowMenu(overflowed)
+    val isRevealingPlayback by remember(collapse) { derivedStateOf { collapse != null && collapse.revealed() > 0f } }
+    val tonalColors = IconButtonDefaults.filledTonalIconButtonColors()
+    val filledColors = IconButtonDefaults.filledIconButtonColors()
+
+    // The bar ends its actions 4dp from the edge, which puts an ordinary 48dp button's glyph on the
+    // content keyline. A grouped button is only its 40dp container, holding the glyph 4dp nearer the
+    // edge, so the group gives those 4dp back.
+    Box(modifier = modifier.padding(end = 4.dp)) {
+        // Beneath the group, so every press lands on a button rather than on the anchor.
+        OverflowMenuAnchor(menu = overflowMenu, modifier = Modifier.matchParentSize())
+        MusicIconButtonGroup {
+            if (collapse != null && isRevealingPlayback) {
+                listOf(collapse.play to tonalColors, collapse.shuffle to filledColors).forEach { (action, colors) ->
+                    iconButton(
+                        icon = action.icon,
+                        label = action.label,
+                        onClick = action.onClick,
+                        enabled = action.enabled,
+                        colors = colors,
+                        modifier = Modifier.revealedBy(collapse),
+                    )
+                }
+            }
+            actions.take(visibleCount).forEach { action ->
+                iconButton(
+                    icon = action.icon,
+                    label = action.label,
+                    onClick = action.onClick,
+                    enabled = action.enabled,
+                )
+            }
+            if (overflowed.isNotEmpty()) {
+                iconButton(
+                    icon = MusicIcons.MoreVert,
+                    label = moreActionsLabel,
+                    onClick = { overflowMenu.show() },
+                    modifier = Modifier.dragToOpen(overflowMenu),
+                )
+            }
+        }
+    }
+}

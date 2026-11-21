@@ -1,0 +1,135 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- The device's files, read and changed, under one grant - see AppPermission.STORAGE. -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:name=".MusicApplication"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:requestLegacyExternalStorage="true"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.Music">
+
+        <!-- The language picked in Settings, kept by AppCompat itself below Android 13 - the system keeps it from 13 on. -->
+        <service
+            android:name="androidx.appcompat.app.AppLocalesMetadataHolderService"
+            android:enabled="false"
+            android:exported="false">
+            <meta-data
+                android:name="autoStoreLocales"
+                android:value="true" />
+        </service>
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            A link shared to Music opens the download screen on it, to choose how - Quick download is the other way. Handed on
+            to Music's own window, so a share never opens a second copy of the app: see SharedLinkActivity.
+        -->
+        <activity
+            android:name=".share.SharedLinkActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            A track or a video opened with Music from another app - a file manager's "Open with", or a share - played in a
+            popup over that app rather than in Music: see OpenMediaActivity. A task of its own, so it opens over that app
+            whatever of Music is open; kept out of Recents, as it closes once it leaves the screen.
+        -->
+        <activity
+            android:name=".open.OpenMediaActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Music.Popup">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="application/ogg" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="audio/*" />
+                <data android:mimeType="video/*" />
+                <data android:mimeType="application/ogg" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            The "Now Playing" widget - see PlaybackWidgets. A plain Android widget, as the Mini player is, not a HyperOS
+            one: marked so, a widget leaves Android's own and joins Xiaomi's - one that must run in a process of its own,
+            carry a version and pass Xiaomi's review before its launcher lists it, which a widget playback updates live
+            from the app's process does not. Unmarked, every launcher lists it as any app's widget - HyperOS's without
+            its name under it.
+        -->
+        <receiver
+            android:name=".widget.NowPlayingWidgetProvider"
+            android:exported="false"
+            android:label="@string/player_now_playing">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_now_playing_info" />
+        </receiver>
+
+        <!--
+            The "Mini player" widget, one row tall - see PlaybackWidgets. A plain Android widget, not a HyperOS one:
+            Xiaomi's widgets come 2x2, 4x2 and 4x4 alone, and its launcher leaves one marked so in any other size out
+            of its widget picker. Unmarked, it is listed there as any app's widget is - without its name under it.
+        -->
+        <receiver
+            android:name=".widget.MiniPlayerWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_mini_player_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_mini_player_info" />
+        </receiver>
+
+    </application>
+
+</manifest>

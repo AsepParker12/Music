@@ -1,0 +1,172 @@
+package com.music.app.core.datastore
+
+import android.content.Context
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import com.music.app.core.common.di.ApplicationScope
+import com.music.app.core.model.PlaybackParent
+import com.music.app.core.model.RepeatMode
+import com.music.app.core.model.playbackParentOf
+import com.music.app.core.model.toStorageKey
+import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+
+private val REMEMBER_PAUSE = booleanPreferencesKey("remember_pause")
+private val REWIND_BEFORE_SKIP_BACK = booleanPreferencesKey("rewind_before_skip_back")
+private val HEADSET_AUTOPLAY = booleanPreferencesKey("headset_autoplay")
+private val EXITS_ON_CLOSE = booleanPreferencesKey("exits_on_close")
+private val PAUSES_LISTEN_HISTORY = booleanPreferencesKey("pauses_listen_history")
+private val PERSISTED_PLAYBACK_NOTIFICATION = booleanPreferencesKey("persisted_playback_notification")
+private val REPEAT_MODE = stringPreferencesKey("repeat_mode")
+private val STOP_AFTER_CURRENT_ENABLED = booleanPreferencesKey("stop_after_current_enabled")
+private val PLAYBACK_PARENT = stringPreferencesKey("playback_parent")
+private val UNCOUNTED_PARENTS = stringSetPreferencesKey("uncounted_parents")
+private val COUNTS_VIDEOS_IN_MOST_PLAYED = booleanPreferencesKey("counts_videos_in_most_played")
+
+/**
+ * Audio-playback behavior settings (ported from Auxio's `PlaybackSettings`) plus restart-only
+ * repeat persistence (ported from Fossify's `playbackSetting`). Shuffle has its own [ShuffleSettings].
+ *
+ * Auxio itself backs these with plain `SharedPreferences`; here they're stored via DataStore
+ * Preferences to match the rest of Music's settings (see [LibrarySettings] for the same pattern).
+ */
+@Singleton
+class PlaybackSettings @Inject constructor(
+    @ApplicationContext context: Context,
+    @ApplicationScope scope: CoroutineScope,
+) {
+
+    private val dataStore = context.playbackDataStore
+    private val cache = PreferencesCache(dataStore, scope)
+
+    internal suspend fun awaitLoaded() = cache.awaitLoaded()
+
+    /** When true, a track-change action (skip/prev) leaves the current play/pause state alone. */
+    val rememberPause: Setting<Boolean> = cache.setting { it[REMEMBER_PAUSE] ?: false }
+
+    suspend fun setRememberPause(enabled: Boolean) {
+        dataStore.edit { it[REMEMBER_PAUSE] = enabled }
+    }
+
+    /**
+     * Auxio's "rewindWithPrev": when true, skip-back rewinds the current track (media3's stock
+     * ~3s threshold) before jumping to the previous item; when false, skip-back always jumps to
+     * the literal previous item.
+     */
+    val rewindBeforeSkipBack: Setting<Boolean> = cache.setting { it[REWIND_BEFORE_SKIP_BACK] ?: false }
+
+    suspend fun setRewindBeforeSkipBack(enabled: Boolean) {
+        dataStore.edit { it[REWIND_BEFORE_SKIP_BACK] = enabled }
+    }
+
+    /** Resume playback when a wired headset is plugged in. */
+    val exitsOnClose: Setting<Boolean> = cache.setting { it[EXITS_ON_CLOSE] ?: false }
+
+    suspend fun setExitsOnClose(enabled: Boolean) {
+        dataStore.edit { it[EXITS_ON_CLOSE] = enabled }
+    }
+
+    /** Whether what plays goes unrecorded: neither "Recent" nor play counts hear of it. */
+    val pausesListenHistory: Setting<Boolean> = cache.setting { it[PAUSES_LISTEN_HISTORY] ?: false }
+
+    suspend fun setPausesListenHistory(enabled: Boolean) {
+        dataStore.edit { it[PAUSES_LISTEN_HISTORY] = enabled }
+    }
+
+    val headsetAutoplay: Setting<Boolean> = cache.setting { it[HEADSET_AUTOPLAY] ?: false }
+
+    suspend fun setHeadsetAutoplay(enabled: Boolean) {
+        dataStore.edit { it[HEADSET_AUTOPLAY] = enabled }
+    }
+
+    /**
+     * Whether the last session outlives the app: put back ready to play whenever the process starts - for an
+     * update check, a widget drawn again - so its notification shows the last track, and a press of play from a
+     * headset, earbuds or a car plays it on while Music is closed. Off, nothing of Music's appears or plays unless
+     * the user starts it: the queue put back waits for the app to be opened, or for a press of play of its own.
+     */
+    val persistedPlaybackNotification: Setting<Boolean> = cache.setting { it[PERSISTED_PLAYBACK_NOTIFICATION] ?: true }
+
+    suspend fun setPersistedPlaybackNotification(enabled: Boolean) {
+        dataStore.edit { it[PERSISTED_PLAYBACK_NOTIFICATION] = enabled }
+    }
+
+    /**
+     * The collection the saved queue was played from, so the list playing when the app was last
+     * closed is still the list marked as playing when it opens - Auxio persists its parent with the
+     * queue for the same reason.
+     */
+    val playbackParent: Setting<PlaybackParent?> = cache.setting { it[PLAYBACK_PARENT]?.let(::playbackParentOf) }
+
+    suspend fun setPlaybackParent(parent: PlaybackParent?) {
+        dataStore.edit {
+            if (parent == null) it.remove(PLAYBACK_PARENT) else it[PLAYBACK_PARENT] = parent.toStorageKey()
+        }
+    }
+
+    /**
+     * The collections whose plays are not counted towards Most played: a track listened to from one of them is
+     * still made recent, but counts only where it is played from anywhere else - the whole library, or another
+     * collection it is in.
+     */
+    val uncountedParents: Setting<Set<PlaybackParent>> =
+        cache.setting { preferences -> preferences[UNCOUNTED_PARENTS].orEmpty().mapNotNullTo(mutableSetOf(), ::playbackParentOf) }
+
+    /** Has plays from [parents] count towards Most played again where [counted], or stop counting otherwise - in one write. */
+    suspend fun setPlaysCounted(parents: Collection<PlaybackParent>, counted: Boolean) {
+        val keys = parents.map { it.toStorageKey() }.toSet()
+        dataStore.edit {
+            val stored = it[UNCOUNTED_PARENTS].orEmpty()
+            it[UNCOUNTED_PARENTS] = if (counted) stored - keys else stored + keys
+        }
+    }
+
+    /**
+     * Whether Most played lists videos beside the music. Off, it leaves them out - their plays still counted, so they
+     * are back where they were once it is on again.
+     */
+    val countsVideosInMostPlayed: Setting<Boolean> = cache.setting { it[COUNTS_VIDEOS_IN_MOST_PLAYED] ?: true }
+
+    suspend fun setCountsVideosInMostPlayed(enabled: Boolean) {
+        dataStore.edit { it[COUNTS_VIDEOS_IN_MOST_PLAYED] = enabled }
+    }
+
+    val repeatMode: Setting<RepeatMode> = cache.setting { it.readRepeatMode() }
+
+    /**
+     * Moves the repeat mode one step along the repeat button's cycle.
+     *
+     * Read and written in a single edit, so presses from the player and the notification each step
+     * from the mode the previous press left behind, never from a stale copy of it.
+     */
+    suspend fun cycleRepeatMode() {
+        dataStore.edit {
+            it[REPEAT_MODE] = it.readRepeatMode().next(it.readStopAfterCurrentEnabled()).name
+        }
+    }
+
+    /** Whether [RepeatMode.STOP_AFTER_CURRENT] is one of the modes the repeat button cycles through. */
+    val stopAfterCurrentEnabled: Setting<Boolean> = cache.setting { it.readStopAfterCurrentEnabled() }
+
+    suspend fun setStopAfterCurrentEnabled(enabled: Boolean) {
+        dataStore.edit {
+            it[STOP_AFTER_CURRENT_ENABLED] = enabled
+            // Dropping the option while it is the active mode would strand the player in a mode the
+            // button can no longer reach.
+            if (!enabled && it.readRepeatMode() == RepeatMode.STOP_AFTER_CURRENT) {
+                it[REPEAT_MODE] = RepeatMode.OFF.name
+            }
+        }
+    }
+}
+
+private fun Preferences.readRepeatMode(): RepeatMode =
+    this[REPEAT_MODE]?.let { name -> runCatching { RepeatMode.valueOf(name) }.getOrNull() }
+        ?: RepeatMode.OFF
+
+private fun Preferences.readStopAfterCurrentEnabled(): Boolean = this[STOP_AFTER_CURRENT_ENABLED] ?: false

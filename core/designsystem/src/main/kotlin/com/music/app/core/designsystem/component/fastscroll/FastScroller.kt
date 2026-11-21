@@ -1,0 +1,426 @@
+package com.music.app.core.designsystem.component.fastscroll
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.OverscrollEffect
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialShapes
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.toShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
+import com.music.app.core.designsystem.component.LocalBottomContentPadding
+import com.music.app.core.designsystem.component.screen.PlayingRow
+import com.music.app.core.designsystem.component.screen.screenList
+import com.music.app.core.designsystem.component.screen.scrollBackToTop
+import com.music.app.core.designsystem.component.screen.scrollToRow
+import com.music.app.core.designsystem.motion.RubberBandOverscroll
+import com.music.app.core.designsystem.motion.rememberRubberBandOverscroll
+import com.music.app.core.designsystem.theme.LocalFastScrollTouchArea
+import com.music.app.core.model.FastScrollTouchArea
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.drop
+
+/** The thumb's column along the list's end edge: Auxio's `spacing_mid_medium`. */
+private val ThumbWidth = 12.dp
+
+/** Auxio's `size_touchable_medium`. */
+private val ThumbHeight = 56.dp
+
+/** As short as the thumb gets pressed against an end the list is stretched past: its bar a dot. */
+private val SqueezedThumbHeight = ThumbWidth
+
+/** The bar drawn in the thumb: Auxio's `ui_scroll_thumb`, inset by `spacing_tiny`. */
+private val ThumbBarWidth = 4.dp
+private val ThumbBarInset = 4.dp
+
+/**
+ * Auxio's `size_touchable_small`: the gap between the thumb and the popup, and how far in from the edge
+ * a touch reaches the thumb with the standard touch area.
+ */
+private val MinTouchTargetSize = 48.dp
+
+/** Auxio's `size_fast_scroll_popup`, and the popup's padding around its text. */
+private val PopupSize = 96.dp
+private val PopupHorizontalPadding = 24.dp
+private val PopupVerticalPadding = 20.dp
+
+private const val POPUP_HIDDEN_SCALE = 0.5f
+
+/** The popup's burst turns a full turn over the list, from this resting tilt. */
+private const val POPUP_BASE_ROTATION_DEGREES = 14f
+
+/**
+ * [content] - a list on [listState], rubber-banded by the [overscroll] it is handed - with Auxio's fast
+ * scroller over it: `FastScrollRecyclerView`.
+ *
+ * A thumb slides and fades in along the list's end edge while the list scrolls or is stretched past an
+ * end, and out half a second after it stops; a relayout never shows it. Stretched past an end, the thumb is
+ * pressed against it as the list is, shortening by as much - iOS's scroll indicator. Faded as well as
+ * slid out, so nothing of it shows past the edge as the list moves sideways - with the library's pager. Dragging it moves the list in
+ * proportion - the thumb and the list are placed by one reckoning of the list's length, which rows of
+ * different heights never unsettle (see [ListScrollMetrics]) - and while it is dragged a popup beside it names the section of the first row on screen -
+ * [sectionAt] of that row's index, "?" where it has none - with a tick of haptics each time that
+ * changes. Without [sectionAt] there is no popup.
+ *
+ * Touches are Auxio's: the thumb takes any touch within the edge's width of it, and a touch on the
+ * edge's outermost sliver takes the thumb straight to the finger. A vertical drag starting anywhere
+ * in that width does the same once it passes the touch slop - unless something else has taken the finger
+ * by then, as the library's pager does a sideways swipe. How wide the edge is follows
+ * [LocalFastScrollTouchArea]. The thumb stays clear of [LocalBottomContentPadding], so it never
+ * slides under the mini player.
+ *
+ * The list is its screen's list - see [screenList] - so its screen's FABs follow it, stepping aside while
+ * the thumb is dragged, as Auxio's home hides its shuffle button while `isFastScrolling`. [scrollToTop]
+ * is what their way back to the top does; [playingRow] is the row they offer a way to near the top, and
+ * [scrollToRow] that way.
+ *
+ * Only while [enabled], and only for a list with somewhere to scroll.
+ *
+ * Every screen's scrolling list stands in one - this, or the column's below - which is what makes it its screen's
+ * list: there is no other way to mark one, so no screen's list goes without a thumb.
+ */
+@Composable
+fun FastScroller(
+    listState: LazyListState,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    sectionAt: ((index: Int) -> String?)? = null,
+    scrollToTop: suspend () -> Unit = { listState.scrollBackToTop() },
+    playingRow: () -> PlayingRow? = { null },
+    scrollToRow: suspend (index: Int) -> Unit = { listState.scrollToRow(it) },
+    overscroll: RubberBandOverscroll = rememberRubberBandOverscroll(),
+    content: @Composable (overscrollEffect: OverscrollEffect) -> Unit,
+) {
+    FastScrollerLayout(
+        track = remember(listState) { LazyListTrack(listState) },
+        markScreenList = { isFastScrolling ->
+            Modifier.screenList(listState, isFastScrolling, scrollToTop, playingRow, scrollToRow)
+        },
+        modifier = modifier,
+        enabled = enabled,
+        sectionAt = sectionAt,
+        overscroll = overscroll,
+        content = content,
+    )
+}
+
+/**
+ * [FastScroller] for a column scrolled with `verticalScroll(scrollState, overscrollEffect = it)` - a page of
+ * settings, a form: the thumb, without a popup, as a column has no rows of its own to name.
+ */
+@Composable
+fun FastScroller(
+    scrollState: ScrollState,
+    modifier: Modifier = Modifier,
+    overscroll: RubberBandOverscroll = rememberRubberBandOverscroll(),
+    content: @Composable (overscrollEffect: OverscrollEffect) -> Unit,
+) {
+    FastScrollerLayout(
+        track = remember(scrollState) { ColumnTrack(scrollState) },
+        markScreenList = { isFastScrolling -> Modifier.screenList(scrollState, isFastScrolling) },
+        modifier = modifier,
+        enabled = true,
+        sectionAt = null,
+        overscroll = overscroll,
+        content = content,
+    )
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun FastScrollerLayout(
+    track: ScrollTrack,
+    markScreenList: (isFastScrolling: () -> Boolean) -> Modifier,
+    modifier: Modifier,
+    enabled: Boolean,
+    sectionAt: ((index: Int) -> String?)?,
+    overscroll: RubberBandOverscroll,
+    content: @Composable (overscrollEffect: OverscrollEffect) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val state = remember(track, scope) { FastScrollerState(track, scope) }
+    val canFastScroll by remember(track) { derivedStateOf { track.canScroll } }
+    val isActive = enabled && canFastScroll
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val density = LocalDensity.current
+    val bottomPaddingPx = with(density) { LocalBottomContentPadding.current.toPx() }
+    val thumbHeightPx = with(density) { ThumbHeight.toPx() }
+    val squeezedThumbHeightPx = with(density) { SqueezedThumbHeight.toPx() }
+    val edgeWidth = LocalFastScrollTouchArea.current.edgeWidth
+
+    // Shown by the list moving under a scroll of its own - a finger, a fling - or stretching past an end,
+    // never by a relayout.
+    LaunchedEffect(state, isActive) {
+        if (!isActive) {
+            state.hide()
+            return@LaunchedEffect
+        }
+        snapshotFlow { track.position to overscroll.stretch }
+            .drop(1)
+            .collect { if (track.isScrollInProgress || overscroll.stretch != 0f) state.onScrolled() }
+    }
+
+    Box(
+        modifier = modifier
+            .then(markScreenList { state.isDragging })
+            .pointerInput(state, isActive, isRtl, bottomPaddingPx, edgeWidth) {
+                if (!isActive) return@pointerInput
+                val thumbWidthPx = ThumbWidth.toPx()
+                val edgeWidthPx = max(edgeWidth.toPx(), thumbWidthPx)
+                fun thumbRangePx() = thumbRangePx(size.height, bottomPaddingPx, thumbHeightPx)
+                fun thumbTopPx() = track.scrollFraction() * thumbRangePx()
+                // The thumb's column, and the edge that reaches for it - never narrower than the column, and
+                // kept within the list: Auxio's `isUnder`. The thumb is taller than a touch target already.
+                val columnStart = if (isRtl) 0f else size.width - thumbWidthPx
+                val targetStart = if (isRtl) 0f else size.width - edgeWidthPx
+                fun isInColumn(x: Float) = x >= columnStart && x < columnStart + thumbWidthPx
+                fun isInTarget(x: Float) = x >= targetStart && x < targetStart + edgeWidthPx
+                fun isOnThumb(x: Float, y: Float) = isInTarget(x) && y >= thumbTopPx() && y < thumbTopPx() + thumbHeightPx
+                // The column's outermost quarter, where a touch takes the thumb straight to the finger.
+                fun isAtOuterEdge(x: Float) = if (isRtl) x < thumbWidthPx / 4 else x > size.width - thumbWidthPx / 4
+                fun thumbTopUnder(y: Float) = y - thumbHeightPx / 2
+
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    var ownsGesture = false
+                    var dragStartY = 0f
+                    var dragStartThumbTop = 0f
+                    fun startDragging(fromY: Float, fromThumbTop: Float) {
+                        dragStartY = fromY
+                        dragStartThumbTop = fromThumbTop
+                        ownsGesture = true
+                        state.startDragging()
+                    }
+
+                    val downX = down.position.x
+                    val downY = down.position.y
+                    if (isInColumn(downX)) {
+                        if (isOnThumb(downX, downY)) {
+                            startDragging(downY, thumbTopPx())
+                        } else if (isAtOuterEdge(downX)) {
+                            state.scrollToThumbTop(thumbTopUnder(downY), thumbRangePx())
+                            startDragging(downY, thumbTopUnder(downY))
+                        }
+                    }
+                    if (ownsGesture) down.consume()
+
+                    var lastY = downY
+                    try {
+                        while (true) {
+                            val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                                .firstOrNull { it.id == down.id } ?: break
+                            if (!change.pressed) {
+                                if (ownsGesture) change.consume()
+                                break
+                            }
+                            val y = change.position.y
+                            if (!ownsGesture && isInTarget(downX) && abs(y - downY) > viewConfiguration.touchSlop) {
+                                if (isOnThumb(downX, downY)) {
+                                    startDragging(lastY, thumbTopPx())
+                                } else {
+                                    state.scrollToThumbTop(thumbTopUnder(y), thumbRangePx())
+                                    startDragging(y, thumbTopUnder(y))
+                                }
+                            }
+                            if (ownsGesture) {
+                                state.scrollToThumbTop(dragStartThumbTop + (y - dragStartY), thumbRangePx())
+                                change.consume()
+                            } else if (isInTarget(downX)) {
+                                // Still watching for the slop: a finger taken by a sideways swipe - the
+                                // pager's - is left to it for good. The list's own claim on it, a touch
+                                // catching its fling, is not: the thumb still takes over from that.
+                                val final = awaitPointerEvent(PointerEventPass.Final).changes
+                                    .firstOrNull { it.id == down.id } ?: break
+                                val movedSideways = abs(final.position.x - downX) > abs(final.position.y - downY)
+                                if (final.isConsumed && movedSideways) break
+                            }
+                            lastY = y
+                        }
+                    } finally {
+                        if (ownsGesture) state.stopDragging()
+                    }
+                }
+            },
+    ) {
+        content(overscroll)
+
+        val hiddenFraction by animateFloatAsState(
+            targetValue = if (state.isThumbShown) 0f else 1f,
+            animationSpec = if (state.isThumbShown) {
+                MaterialTheme.motionScheme.defaultSpatialSpec()
+            } else {
+                MaterialTheme.motionScheme.fastSpatialSpec()
+            },
+            label = "fastScrollThumbSlide",
+        )
+        val thumbAlpha by animateFloatAsState(
+            targetValue = if (state.isThumbShown) 1f else 0f,
+            animationSpec = if (state.isThumbShown) {
+                MaterialTheme.motionScheme.defaultEffectsSpec()
+            } else {
+                MaterialTheme.motionScheme.fastEffectsSpec()
+            },
+            label = "fastScrollThumbFade",
+        )
+        val thumbColor = MaterialTheme.colorScheme.secondary
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .layout { measurable, constraints ->
+                    // Pressed against the end the list is stretched past - its top, past the start - by as
+                    // much as the list is, down to a dot.
+                    val stretch = overscroll.stretch
+                    val squeeze = abs(stretch).coerceAtMost(thumbHeightPx - squeezedThumbHeightPx)
+                    val thumb = measurable.measure(Constraints(maxHeight = (thumbHeightPx - squeeze).roundToInt()))
+                    layout(thumb.width, constraints.maxHeight) {
+                        val top = track.scrollFraction() * thumbRangePx(constraints.maxHeight, bottomPaddingPx, thumbHeightPx) +
+                            if (stretch < 0f) squeeze else 0f
+                        thumb.placeRelativeWithLayer(0, top.roundToInt()) {
+                            // Slid out past the end edge, whichever side that is.
+                            translationX = hiddenFraction * thumb.width * if (isRtl) -1 else 1
+                            alpha = thumbAlpha
+                        }
+                    }
+                }
+                .size(ThumbWidth, ThumbHeight)
+                .padding(ThumbBarInset),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(ThumbBarWidth)
+                    .fillMaxHeight()
+                    .background(thumbColor, CircleShape),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = state.isDragging && sectionAt != null,
+            enter = scaleIn(MaterialTheme.motionScheme.defaultSpatialSpec(), POPUP_HIDDEN_SCALE) +
+                fadeIn(MaterialTheme.motionScheme.defaultEffectsSpec()),
+            exit = scaleOut(MaterialTheme.motionScheme.defaultSpatialSpec(), POPUP_HIDDEN_SCALE) +
+                fadeOut(MaterialTheme.motionScheme.defaultEffectsSpec()),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(end = ThumbWidth + MinTouchTargetSize)
+                .layout { measurable, constraints ->
+                    val popup = measurable.measure(Constraints())
+                    layout(popup.width, constraints.maxHeight) {
+                        val thumbTop = track.scrollFraction() *
+                            thumbRangePx(constraints.maxHeight, bottomPaddingPx, thumbHeightPx)
+                        // Centred on the thumb, and kept within the list above the mini player.
+                        val top = (thumbTop + (thumbHeightPx - popup.height) / 2)
+                            .coerceAtMost(constraints.maxHeight - bottomPaddingPx - popup.height)
+                            .coerceAtLeast(0f)
+                        popup.placeRelative(0, top.roundToInt())
+                    }
+                },
+        ) {
+            val latestSectionAt by rememberUpdatedState(sectionAt)
+            val section by remember(track) {
+                derivedStateOf { latestSectionAt?.invoke(track.firstVisibleIndex) ?: "?" }
+            }
+            val haptics = LocalHapticFeedback.current
+            val isShowing by rememberUpdatedState(transition.targetState == EnterExitState.Visible)
+            LaunchedEffect(Unit) {
+                snapshotFlow { section }.drop(1).collect {
+                    if (isShowing) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                }
+            }
+            FastScrollPopup(section = section, rotationDegrees = { track.scrollFraction() * 360f })
+        }
+    }
+}
+
+/**
+ * The popup: [section] on Material's soft burst, which turns with the list - Auxio's
+ * `SoftBurstPopupDrawable`. [rotationDegrees] is read only while drawing, so scrolling redraws the burst
+ * without recomposing anything.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun FastScrollPopup(section: String, rotationDegrees: () -> Float) {
+    val burstShape = MaterialShapes.SoftBurst.toShape()
+    Box(modifier = Modifier.size(PopupSize), contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { rotationZ = POPUP_BASE_ROTATION_DEGREES + rotationDegrees() }
+                .background(MaterialTheme.colorScheme.secondary, burstShape),
+        )
+        val textStyle = MaterialTheme.typography.headlineMediumEmphasized
+        Text(
+            text = section,
+            color = MaterialTheme.colorScheme.onSecondary,
+            // The line height in proportion to the text, as the style has it, rather than fixed: auto-size
+            // shrinks only the font, so a fixed line height would keep two lines as tall as ever and they
+            // would shrink to nothing trying to fit.
+            style = textStyle.copy(lineHeight = (textStyle.lineHeight.value / textStyle.fontSize.value).em),
+            textAlign = TextAlign.Center,
+            // A section breaks its own lines - a month above its year - and is otherwise one line.
+            maxLines = section.lines().size,
+            autoSize = TextAutoSize.StepBased(minFontSize = 1.sp, maxFontSize = 32.sp),
+            modifier = Modifier.padding(horizontal = PopupHorizontalPadding, vertical = PopupVerticalPadding),
+        )
+    }
+}
+
+/**
+ * How far in from the edge a touch reaches the thumb: Auxio's touch target when standard, half of it
+ * when narrow, and half again more when wide.
+ */
+private val FastScrollTouchArea.edgeWidth: Dp
+    get() = when (this) {
+        FastScrollTouchArea.NARROW -> MinTouchTargetSize / 2
+        FastScrollTouchArea.STANDARD -> MinTouchTargetSize
+        FastScrollTouchArea.WIDE -> MinTouchTargetSize * 1.5f
+    }
+
+/** How far the thumb can travel down a list [heightPx] tall, stopping [bottomPaddingPx] short of its end. */
+private fun thumbRangePx(heightPx: Int, bottomPaddingPx: Float, thumbHeightPx: Float): Float =
+    (heightPx - bottomPaddingPx - thumbHeightPx).coerceAtLeast(0f)

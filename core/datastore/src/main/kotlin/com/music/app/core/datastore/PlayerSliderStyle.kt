@@ -1,0 +1,13 @@
+package com.music.app.core.datastore
+
+/** How the player's seek bar is drawn. */
+enum class PlayerSliderStyle {
+    STANDARD,
+    CIRCULAR,
+    ;
+
+    companion object {
+        /** What it is until the user chooses otherwise. */
+        val Default = CIRCULAR
+    }
+}
