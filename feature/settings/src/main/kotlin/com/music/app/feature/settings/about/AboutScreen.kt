@@ -38,21 +38,14 @@ private val ProjectLinks = listOf(
     ProjectLink(R.string.about_link_issues, GitHub.ISSUES_URL) { rememberVectorPainter(MusicIcons.BugReport) },
 )
 
-/** Someone Music is by, or built on, as About lists them. */
+/** Someone Music is by, as About lists them. */
 private class Person(val name: String, val avatarUrl: String, val roleRes: Int, val profileUrl: String)
 
 private val LeadDeveloper = Person(GitHub.OWNER, GitHub.AVATAR_URL, R.string.about_role_lead_developer, GitHub.PROFILE_URL)
 
-/** The apps Music's code is ported from, credited as ArchiveTune credits those it respects. */
-private val BuiltOn = listOf(
-    Person("Auxio", "https://github.com/OxygenCobalt.png", R.string.about_role_auxio, "https://github.com/OxygenCobalt/Auxio"),
-    Person("ArchiveTune", "https://github.com/rukamori.png", R.string.about_role_archivetune, "https://github.com/rukamori/ArchiveTune"),
-    Person("Fossify Music Player", "https://github.com/FossifyOrg.png", R.string.about_role_fossify, "https://github.com/FossifyOrg/Music-Player"),
-)
-
 /**
  * What Music is and who it is by: the installed build, the project's pages and its libraries' licenses, its
- * developer, the apps it is built on, and its contributors - kept from last time, and asked for again
+ * developer, and its contributors - kept from last time, and asked for again
  * whenever the device is online.
  */
 data object AboutScreen : Screen {
@@ -98,12 +91,6 @@ data object AboutScreen : Screen {
 
             SettingsSection(stringResource(R.string.about_lead_developer)) {
                 PersonItem(LeadDeveloper)
-            }
-
-            SettingsSectionDivider()
-
-            SettingsSection(stringResource(R.string.about_built_on)) {
-                BuiltOn.forEach { PersonItem(it) }
             }
 
             SettingsSectionDivider()

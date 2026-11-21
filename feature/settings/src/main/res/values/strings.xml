@@ -545,10 +545,6 @@
     <string name="about_license_unknown">Unknown license</string>
     <string name="about_lead_developer">Lead developer</string>
     <string name="about_role_lead_developer">Creator and maintainer</string>
-    <string name="about_built_on">Built on</string>
-    <string name="about_role_auxio">Library, playback and settings</string>
-    <string name="about_role_archivetune">Player, lyrics, themes and updates</string>
-    <string name="about_role_fossify">Scanning and a queue that survives restarts</string>
     <string name="about_contributors">Contributors</string>
 
     <!-- Managed lists -->
