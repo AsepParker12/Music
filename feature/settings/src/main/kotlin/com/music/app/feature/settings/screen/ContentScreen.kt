@@ -1,0 +1,187 @@
+package com.music.app.feature.settings.screen
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.datastore.CoverMode
+import com.music.app.core.designsystem.R as DesignR
+import com.music.app.core.designsystem.component.dialog.MusicConfirmationDialog
+import com.music.app.core.model.FolderView
+import com.music.app.core.model.sort.SortDirection
+import com.music.app.core.model.sort.SortScope
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.settings.R
+import com.music.app.core.designsystem.component.settings.SettingsActionItem
+import com.music.app.core.designsystem.component.settings.SettingsChoiceItem
+import com.music.app.core.designsystem.component.settings.SettingsList
+import com.music.app.core.designsystem.component.settings.SettingsNavigationItem
+import com.music.app.core.designsystem.component.settings.SettingsSection
+import com.music.app.core.designsystem.component.settings.SettingsSectionDivider
+import com.music.app.core.designsystem.component.settings.SettingsSwitchItem
+import com.music.app.feature.settings.manage.ExcludedFoldersScreen
+import com.music.app.feature.tageditor.autotag.AutoTagScreen
+
+/** Where the library comes from, what it is called, and what it is allowed to look like. */
+data object ContentScreen : Screen {
+    override val titleRes: Int get() = R.string.content_title
+
+    @Composable
+    override fun Content() {
+        val navigator = LocalNavigator.current
+        val viewModel: ContentSettingsViewModel = hiltViewModel()
+        val intelligentSortingEnabled by viewModel.intelligentSortingEnabled.collectAsStateWithLifecycle()
+        val separateArtists by viewModel.separateArtists.collectAsStateWithLifecycle()
+        val folderView by viewModel.folderView.collectAsStateWithLifecycle()
+        val coverMode by viewModel.coverMode.collectAsStateWithLifecycle()
+        val forceSquareCovers by viewModel.forceSquareCovers.collectAsStateWithLifecycle()
+        val newTracksDirection by viewModel.newTracksDirection.collectAsStateWithLifecycle()
+        val defaultSortScope by viewModel.defaultSortScope.collectAsStateWithLifecycle()
+        val hidesCollaborators by viewModel.hidesCollaborators.collectAsStateWithLifecycle()
+        val automaticReloading by viewModel.automaticReloading.collectAsStateWithLifecycle()
+        var showResetSortingDialog by rememberSaveable { mutableStateOf(false) }
+
+        SettingsList {
+            SettingsSection(stringResource(R.string.content_library_section)) {
+                SettingsSwitchItem(
+                    title = stringResource(R.string.automatic_reloading_title),
+                    summary = stringResource(R.string.automatic_reloading_summary),
+                    checked = automaticReloading,
+                    onCheckedChange = viewModel::setAutomaticReloading,
+                )
+                SettingsNavigationItem(
+                    title = stringResource(R.string.excluded_folders_title),
+                    summary = stringResource(R.string.excluded_folders_summary),
+                    onClick = { navigator.go(ExcludedFoldersScreen) },
+                )
+                SettingsNavigationItem(
+                    title = stringResource(R.string.auto_tag_title),
+                    summary = stringResource(R.string.auto_tag_summary),
+                    onClick = { navigator.go(AutoTagScreen()) },
+                )
+                SettingsChoiceItem(
+                    title = stringResource(R.string.folder_view_title),
+                    // In FolderView's order, so an option's index is its view.
+                    options = listOf(
+                        stringResource(R.string.folder_view_separate),
+                        stringResource(R.string.folder_view_grouped),
+                    ),
+                    selectedIndex = folderView.ordinal,
+                    onSelect = { viewModel.setFolderView(FolderView.entries[it]) },
+                )
+            }
+
+            SettingsSectionDivider()
+
+            SettingsSection(stringResource(R.string.content_tags_section)) {
+                SettingsSwitchItem(
+                    title = stringResource(R.string.separate_artists_title),
+                    summary = stringResource(R.string.separate_artists_summary),
+                    checked = separateArtists,
+                    onCheckedChange = viewModel::setSeparateArtists,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.intelligent_sorting_title),
+                    summary = stringResource(R.string.intelligent_sorting_summary),
+                    checked = intelligentSortingEnabled,
+                    onCheckedChange = viewModel::setIntelligentSortingEnabled,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.hide_collaborators_title),
+                    summary = stringResource(R.string.hide_collaborators_summary),
+                    checked = hidesCollaborators,
+                    onCheckedChange = viewModel::setHidesCollaborators,
+                )
+            }
+
+            SettingsSectionDivider()
+
+            SettingsSection(stringResource(R.string.content_sorting_section)) {
+                SettingsChoiceItem(
+                    title = stringResource(R.string.sort_new_tracks_title),
+                    // In SortDirection's order, so an option's index is its direction.
+                    options = listOf(
+                        stringResource(DesignR.string.sort_new_tracks_bottom),
+                        stringResource(DesignR.string.sort_new_tracks_top),
+                    ),
+                    selectedIndex = newTracksDirection.ordinal,
+                    onSelect = { viewModel.setNewTracksDirection(SortDirection.entries[it]) },
+                )
+                SettingsChoiceItem(
+                    title = stringResource(R.string.sort_default_scope_title),
+                    // In SortScope's order, so an option's index is its scope.
+                    options = listOf(
+                        stringResource(R.string.sort_default_scope_this_list),
+                        stringResource(R.string.sort_default_scope_all_lists),
+                    ),
+                    selectedIndex = defaultSortScope.ordinal,
+                    onSelect = { viewModel.setDefaultSortScope(SortScope.entries[it]) },
+                )
+                SettingsActionItem(
+                    title = stringResource(R.string.sort_reset_title),
+                    summary = stringResource(R.string.sort_reset_summary),
+                    onClick = { showResetSortingDialog = true },
+                )
+            }
+
+            SettingsSectionDivider()
+
+            SettingsSection(stringResource(R.string.content_images_section)) {
+                SettingsChoiceItem(
+                    title = stringResource(R.string.album_covers_title),
+                    // In CoverMode's order, which is Auxio's, so an option's index is its mode.
+                    options = listOf(
+                        stringResource(R.string.album_covers_off),
+                        stringResource(R.string.album_covers_save_space),
+                        stringResource(R.string.album_covers_balanced),
+                        stringResource(R.string.album_covers_high),
+                        stringResource(R.string.album_covers_as_is),
+                    ),
+                    selectedIndex = coverMode.ordinal,
+                    onSelect = { viewModel.setCoverMode(CoverMode.entries[it]) },
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.force_square_covers_title),
+                    summary = stringResource(R.string.force_square_covers_summary),
+                    checked = forceSquareCovers,
+                    onCheckedChange = viewModel::setForceSquareCovers,
+                )
+            }
+
+            SettingsSectionDivider()
+
+            SettingsSection(stringResource(R.string.content_language_section)) {
+                SettingsSwitchItem(
+                    title = stringResource(R.string.use_system_language_title),
+                    summary = stringResource(R.string.use_system_language_summary),
+                    initialValue = true,
+                )
+                SettingsChoiceItem(
+                    title = stringResource(R.string.app_language_title),
+                    options = listOf(
+                        stringResource(R.string.app_language_english),
+                        stringResource(R.string.app_language_french),
+                        stringResource(R.string.app_language_arabic),
+                    ),
+                )
+            }
+        }
+
+        if (showResetSortingDialog) {
+            MusicConfirmationDialog(
+                title = stringResource(R.string.sort_reset_title),
+                message = stringResource(R.string.sort_reset_confirm),
+                confirmLabel = stringResource(R.string.sort_reset_action),
+                successMessage = stringResource(R.string.sort_reset_done),
+                failureMessage = stringResource(R.string.sort_reset_failed),
+                onDismiss = { showResetSortingDialog = false },
+                operation = viewModel::resetSorting,
+            )
+        }
+    }
+}

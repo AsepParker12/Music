@@ -1,0 +1,76 @@
+plugins {
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
+}
+
+android {
+    namespace = "com.music.app.feature.settings"
+    compileSdk = 37
+
+    defaultConfig {
+        minSdk = 26
+    }
+
+    buildFeatures {
+        compose = true
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation(project(":core:navigation"))
+    implementation(project(":core:datastore"))
+    implementation(project(":core:data"))
+    implementation(project(":core:common"))
+    implementation(project(":core:designsystem"))
+    implementation(project(":feature:scanner"))
+    implementation(project(":feature:library"))
+    implementation(project(":feature:player"))
+    implementation(project(":feature:update"))
+    implementation(project(":feature:vault"))
+    implementation(project(":feature:tageditor"))
+    implementation(project(":feature:backup"))
+    implementation(project(":feature:explorer"))
+    implementation(project(":feature:feedback"))
+    implementation(project(":feature:equalizer"))
+    implementation(project(":feature:download"))
+    implementation(project(":core:downloader"))
+
+    testImplementation(libs.junit)
+
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
+    // The language picked in Settings, applied to every activity on every Android version - see AppLanguage.
+    implementation(libs.androidx.appcompat)
+
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.hilt.navigation.compose)
+
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+
+    implementation(libs.kotlinx.coroutines.android)
+
+    implementation(libs.coil.compose)
+    implementation(libs.materialkolor)
+    implementation(libs.androidsvg)
+    implementation(libs.aboutlibraries.core)
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}

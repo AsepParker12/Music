@@ -1,0 +1,36 @@
+package com.music.app.feature.settings.about
+
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.settings.R
+import com.music.app.core.designsystem.component.settings.SettingsInfoItem
+import com.music.app.core.designsystem.component.settings.SettingsLazyList
+import com.music.app.feature.settings.component.settingsLoad
+
+/** Every library the app is built with, its version and its licenses. */
+data object LicensesScreen : Screen {
+    override val titleRes: Int get() = R.string.about_licenses
+
+    @Composable
+    override fun Content() {
+        val viewModel: LicensesViewModel = hiltViewModel()
+        val licenses by viewModel.licenses.collectAsStateWithLifecycle()
+        val unknownLicense = stringResource(R.string.about_license_unknown)
+
+        SettingsLazyList {
+            settingsLoad(licenses, onRetry = viewModel::load) { loaded ->
+                itemsIndexed(loaded, key = { index, license -> "${license.name}:$index" }) { _, license ->
+                    SettingsInfoItem(
+                        title = license.name,
+                        value = listOfNotNull(license.version, license.licenses ?: unknownLicense).joinToString(" · "),
+                    )
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,187 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
+package com.music.app.feature.update.ui
+
+import com.music.app.core.designsystem.component.animateProgressAsState
+import android.content.Context
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularWavyProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.common.network.isNetworkOnline
+import com.music.app.core.designsystem.component.actionButton
+import com.music.app.core.designsystem.component.dialog.MusicDialog
+import com.music.app.feature.update.R
+import com.music.app.feature.update.UpdateInstaller
+import com.music.app.feature.update.UpdateRegistry
+import com.music.app.feature.update.UpdateService
+import com.music.app.feature.update.UpdateState
+import com.music.app.feature.update.installedBuild
+import com.music.app.feature.update.StagedApk
+import com.music.app.feature.update.github.Release
+import com.music.app.feature.update.github.ReleaseApk
+import com.music.app.feature.update.sizeText
+import com.music.app.feature.update.speedText
+import kotlin.math.roundToInt
+import com.music.app.core.designsystem.icon.MusicIcons
+
+/**
+ * Updates to [release] with [apk] - or, with none chosen, the APK for the running build: installs it when it
+ * is the one already downloaded, downloads it otherwise - or, offline, says so. What happens next is
+ * [UpdateRegistry.state], which [UpdateDownloadDialog] follows.
+ */
+fun startUpdate(context: Context, release: Release, apk: ReleaseApk?) {
+    val chosen = apk ?: release.apkFor(context.installedBuild())
+    val state = UpdateRegistry.stateOf()
+    when {
+        state is UpdateState.Downloaded && state.staged.isOf(release, chosen) -> install(context, state)
+        state == UpdateState.Connecting || state is UpdateState.Downloading -> Unit
+        chosen == null -> UpdateRegistry.update(UpdateState.Error(context.getString(R.string.update_no_apk)))
+        !context.isNetworkOnline() -> UpdateRegistry.update(UpdateState.Error(context.getString(R.string.update_offline)))
+        else -> {
+            // Connecting from the press on, so what follows it never reads the moment before the
+            // service starts as nothing happening.
+            UpdateRegistry.update(UpdateState.Connecting)
+            UpdateService.start(context, release, chosen)
+        }
+    }
+}
+
+/** Whether this is [release]'s APK of [apk]'s variant - any of its variants, with none chosen. */
+private fun StagedApk.isOf(release: Release, apk: ReleaseApk?): Boolean =
+    versionName == release.versionName && (apk == null || variant == apk.variant)
+
+/** Hands the downloaded APK to the installer - Android asks the user what it needs of them. */
+private fun install(context: Context, downloaded: UpdateState.Downloaded) {
+    UpdateInstaller.installNow(context, downloaded.staged)
+}
+
+/**
+ * The update in progress, after [startUpdate] - ArchiveTune's download dialog: the download's progress as a
+ * wavy ring with its percentage, how much of how much has arrived and how fast, and Cancel. A download that finishes launches the installer at once;
+ * one found already downloaded waits to be installed, a failure stays to say so, and [onClose] is called once
+ * it is done with.
+ */
+@Composable
+fun UpdateDownloadDialog(release: Release, onClose: () -> Unit) {
+    val context = LocalContext.current
+    val state by UpdateRegistry.state.collectAsStateWithLifecycle()
+
+    // The installer opens by itself only for a download seen through here, never for one merely restored.
+    var sawDownload by remember { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        when (val current = state) {
+            UpdateState.Connecting, is UpdateState.Downloading -> sawDownload = true
+            is UpdateState.Downloaded ->
+                if (sawDownload) {
+                    install(context, current)
+                    onClose()
+                }
+            UpdateState.Idle -> onClose()
+            is UpdateState.Error -> Unit
+        }
+    }
+
+    val cancelLabel = stringResource(android.R.string.cancel)
+    val title = stringResource(
+        if (release.isPreRelease) R.string.update_download_title_artifact else R.string.update_download_title,
+        release.versionName,
+    )
+
+    when (val current = state) {
+        UpdateState.Connecting, is UpdateState.Downloading -> {
+            val downloading = current as? UpdateState.Downloading
+            val progress = downloading?.progress
+            val animatedProgress by animateProgressAsState(progress ?: 0f)
+            MusicDialog(
+                onDismissRequest = {},
+                title = title,
+                buttons = { actionButton(label = cancelLabel, onClick = { UpdateService.cancel(context) }) },
+            ) {
+                // The same shape from connecting to done, so nothing moves as the numbers arrive.
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Box(modifier = Modifier.size(96.dp), contentAlignment = Alignment.Center) {
+                        if (progress != null) {
+                            CircularWavyProgressIndicator(progress = { animatedProgress }, modifier = Modifier.fillMaxSize())
+                            Text(
+                                text = stringResource(
+                                    R.string.update_download_progress,
+                                    (animatedProgress * 100f).roundToInt().coerceIn(0, 100),
+                                ),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        } else {
+                            CircularWavyProgressIndicator(modifier = Modifier.size(72.dp))
+                        }
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = downloading?.sizeText(context) ?: stringResource(R.string.update_connecting),
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = downloading?.speedText(context).orEmpty(),
+                            style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+
+        is UpdateState.Downloaded -> {
+            val installLabel = stringResource(R.string.update_install)
+            MusicDialog(
+                onDismissRequest = onClose,
+                title = title,
+                buttons = {
+                    actionButton(label = cancelLabel, onClick = onClose)
+                    actionButton(label = installLabel, onClick = { install(context, current) })
+                },
+            ) {
+                Text(stringResource(R.string.update_downloaded))
+            }
+        }
+
+        is UpdateState.Error -> {
+            val okLabel = stringResource(android.R.string.ok)
+            MusicDialog(
+                onDismissRequest = onClose,
+                icon = { Icon(MusicIcons.Error, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                title = stringResource(R.string.update_failed_title),
+                buttons = { actionButton(label = okLabel, onClick = onClose) },
+            ) {
+                Text(current.message, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        UpdateState.Idle -> Unit
+    }
+}

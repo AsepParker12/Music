@@ -1,0 +1,86 @@
+package com.music.app.feature.settings.appearance
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.music.app.core.common.coroutines.launchOperation
+import com.music.app.core.data.background.CustomBackgroundImages
+import com.music.app.core.datastore.CustomFont
+import com.music.app.core.datastore.EffectSettings
+import com.music.app.core.datastore.MiniPlayerBackgroundStyle
+import com.music.app.core.datastore.MiniPlayerButton
+import com.music.app.core.datastore.PlayerAppearance
+import com.music.app.core.datastore.PlayerBackgroundStyle
+import com.music.app.core.datastore.PlayerSliderStyle
+import com.music.app.core.datastore.PlayerStyle
+import com.music.app.core.datastore.PlayerStyleSettings
+import com.music.app.core.datastore.ThemeChoices
+import com.music.app.core.datastore.ThemeSettings
+import com.music.app.core.datastore.stateIn
+import com.music.app.core.model.AppFont
+import com.music.app.core.model.ThemeMode
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+
+/**
+ * The stored appearance settings every appearance screen is connected to - the [AppearanceScreen] and
+ * the palette, theme creator and custom background screens it opens.
+ */
+@HiltViewModel
+class AppearanceSettingsViewModel @Inject constructor(
+    private val themeSettings: ThemeSettings,
+    private val playerStyleSettings: PlayerStyleSettings,
+    private val effectSettings: EffectSettings,
+    private val customBackgroundImages: CustomBackgroundImages,
+) : ViewModel() {
+
+    val theme: StateFlow<ThemeChoices> = themeSettings.choices.stateIn(viewModelScope)
+    val player: StateFlow<PlayerAppearance> = playerStyleSettings.appearance.stateIn(viewModelScope)
+    val roundMode: StateFlow<Boolean> = themeSettings.roundMode.stateIn(viewModelScope)
+    val disableAnimations: StateFlow<Boolean> = effectSettings.disableAnimations.stateIn(viewModelScope)
+    val forceHighRefreshRate: StateFlow<Boolean> = effectSettings.forceHighRefreshRate.stateIn(viewModelScope)
+
+    private fun write(block: suspend () -> Unit) {
+        viewModelScope.launch { block() }
+    }
+
+    fun setThemeMode(mode: ThemeMode) = write { themeSettings.setThemeMode(mode) }
+    fun setPureBlack(enabled: Boolean) = write { themeSettings.setPureBlack(enabled) }
+    fun setDynamicColors(enabled: Boolean) = write { themeSettings.setDynamicColors(enabled) }
+    fun setWallpaperColors(enabled: Boolean) = write { themeSettings.setWallpaperColors(enabled) }
+    fun setCoverColors(enabled: Boolean) = write { themeSettings.setCoverColors(enabled) }
+    fun setColorPalette(palette: String) = write { themeSettings.setColorPalette(palette) }
+    fun setFont(font: AppFont) = write { themeSettings.setFont(font) }
+    fun setCustomFont(customFont: CustomFont) = write { themeSettings.setCustomFont(customFont) }
+    fun setRoundMode(enabled: Boolean) = write { themeSettings.setRoundMode(enabled) }
+
+    fun setPlayerStyle(style: PlayerStyle) = write { playerStyleSettings.setStyle(style) }
+    fun setSliderStyle(style: PlayerSliderStyle) = write { playerStyleSettings.setSliderStyle(style) }
+    fun setPlayerBackground(style: PlayerBackgroundStyle) = write { playerStyleSettings.setBackground(style) }
+    fun setMiniPlayerBackground(style: MiniPlayerBackgroundStyle) =
+        write { playerStyleSettings.setMiniPlayerBackground(style) }
+    fun setMiniPlayerButton(button: MiniPlayerButton) = write { playerStyleSettings.setMiniPlayerButton(button) }
+    fun setShowsLyricsPreview(enabled: Boolean) = write { playerStyleSettings.setShowsLyricsPreview(enabled) }
+    fun setHideThumbnail(enabled: Boolean) = write { playerStyleSettings.setHideThumbnail(enabled) }
+    fun setSwipeToChangeTrack(enabled: Boolean) = write { playerStyleSettings.setSwipeToChangeTrack(enabled) }
+    /**
+     * Makes a copy of the image at [sourceUri] - or none, for null - the background's image, letting go of the one
+     * it had. [onFinished] hears whether it worked: an image that cannot be read leaves the background as it was.
+     */
+    fun setCustomBackgroundImage(sourceUri: String?, onFinished: (succeeded: Boolean) -> Unit) {
+        viewModelScope.launchOperation(onFinished) {
+            val previousImage = player.value.customBackground.imageUri
+            val image = sourceUri?.let { customBackgroundImages.import(it) }
+            playerStyleSettings.setCustomBackgroundImage(image)
+            previousImage?.let { customBackgroundImages.release(it) }
+        }
+    }
+    fun setCustomBackgroundBlur(blur: Float) = write { playerStyleSettings.setCustomBackgroundBlur(blur) }
+    fun setCustomBackgroundContrast(contrast: Float) = write { playerStyleSettings.setCustomBackgroundContrast(contrast) }
+    fun setCustomBackgroundBrightness(brightness: Float) =
+        write { playerStyleSettings.setCustomBackgroundBrightness(brightness) }
+
+    fun setDisableAnimations(enabled: Boolean) = write { effectSettings.setDisableAnimations(enabled) }
+    fun setForceHighRefreshRate(enabled: Boolean) = write { effectSettings.setForceHighRefreshRate(enabled) }
+}

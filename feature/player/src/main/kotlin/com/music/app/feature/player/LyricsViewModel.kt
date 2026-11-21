@@ -1,0 +1,71 @@
+package com.music.app.feature.player
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.music.app.core.data.lyrics.DictionaryState
+import com.music.app.core.data.lyrics.JapaneseDictionary
+import com.music.app.core.datastore.LyricsSettings
+import com.music.app.core.datastore.Setting
+import com.music.app.core.model.Track
+import com.music.app.feature.tageditor.TrackTagsRepository
+import com.music.app.feature.tageditor.lyrics.MissingLyricsFinder
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+/** The player's lyrics - its pill and the lyrics it opens into - and the stored settings they are drawn with. */
+@HiltViewModel
+class LyricsViewModel @Inject constructor(
+    private val trackTagsRepository: TrackTagsRepository,
+    private val lyricsSettings: LyricsSettings,
+    japaneseDictionary: JapaneseDictionary,
+    private val missingLyricsFinder: MissingLyricsFinder,
+) : ViewModel() {
+
+    val lyricsClick: StateFlow<Boolean> = lyricsSettings.lyricsClick.state()
+    val lyricsScroll: StateFlow<Boolean> = lyricsSettings.lyricsScroll.state()
+    val lyricsTextSize: StateFlow<Float> = lyricsSettings.lyricsTextSize.state()
+    val lyricsLineSpacing: StateFlow<Float> = lyricsSettings.lyricsLineSpacing.state()
+    val lyricsLineBlur: StateFlow<Boolean> = lyricsSettings.lyricsLineBlur.state()
+    val showLyricsPlayerControls: StateFlow<Boolean> = lyricsSettings.showLyricsPlayerControls.state()
+    val bounceFactor: StateFlow<Float> = lyricsSettings.bounceFactor.state()
+    val glowFactor: StateFlow<Float> = lyricsSettings.glowFactor.state()
+    val fillTransitionWidth: StateFlow<Float> = lyricsSettings.fillTransitionWidth.state()
+    val lrcBounceEnabled: StateFlow<Boolean> = lyricsSettings.lrcBounceEnabled.state()
+    val romanizeArabic: StateFlow<Boolean> = lyricsSettings.romanizeArabic.state()
+    /** Japanese is romanized while it is turned on and its dictionary is downloaded - the dictionary does it. */
+    val romanizeJapanese: StateFlow<Boolean> = combine(lyricsSettings.romanizeJapanese.flow, japaneseDictionary.state) { enabled, dictionary ->
+        enabled && dictionary == DictionaryState.Installed
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        lyricsSettings.romanizeJapanese.value && japaneseDictionary.state.value == DictionaryState.Installed,
+    )
+    val romanizeKorean: StateFlow<Boolean> = lyricsSettings.romanizeKorean.state()
+    val romanizeChinese: StateFlow<Boolean> = lyricsSettings.romanizeChinese.state()
+    val romanizeHindi: StateFlow<Boolean> = lyricsSettings.romanizeHindi.state()
+    val romanizeOtherLanguages: StateFlow<Boolean> = lyricsSettings.romanizeOtherLanguages.state()
+    val showsRomanizationOnly: StateFlow<Boolean> = lyricsSettings.showsRomanizationOnly.state()
+
+    /** The lyrics [track]'s file holds, read again whenever Music writes them - blank where it holds none. */
+    fun lyrics(track: Track): Flow<String> = trackTagsRepository.lyrics(track)
+
+    /** Whether [track]'s lyrics are being looked for on the web this moment, to be written into its file once found. */
+    fun isFindingLyrics(track: Track): Flow<Boolean> = missingLyricsFinder.searchingTrackIds.map { track.id in it }
+
+    /** Looks for [track]'s lyrics on the web again, as the user asks - once Music may change its file. */
+    fun findLyrics(track: Track) = missingLyricsFinder.findLyricsNow(track)
+
+    fun setShowLyricsPlayerControls(enabled: Boolean) {
+        viewModelScope.launch { lyricsSettings.setShowLyricsPlayerControls(enabled) }
+    }
+
+    private fun <T> Setting<T>.state(): StateFlow<T> =
+        flow.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), value)
+}

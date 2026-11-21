@@ -1,0 +1,374 @@
+package com.music.app.feature.vault
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import com.music.app.core.designsystem.component.LocalDragSelection
+import com.music.app.core.designsystem.component.SelectionState
+import com.music.app.core.designsystem.component.dragSelection
+import com.music.app.core.designsystem.component.fab.ExtendedFloatingActionButtonContent
+import com.music.app.core.designsystem.component.fab.MusicExtendedFloatingActionButtons
+import com.music.app.core.designsystem.component.rememberDragSelection
+import com.music.app.core.designsystem.component.rememberSelectionState
+import com.music.app.core.designsystem.component.selectAllAction
+import com.music.app.core.designsystem.component.toTopBarSelection
+import com.music.app.core.navigation.PrivateFolderPicker
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import com.music.app.core.designsystem.component.LocalBottomContentPadding
+import com.music.app.core.designsystem.component.MusicCoverArt
+import com.music.app.core.designsystem.component.MusicListRow
+import com.music.app.core.designsystem.component.MusicTabRow
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.MusicVideoRow
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.fastscroll.FastScroller
+import com.music.app.core.designsystem.component.sheet.MusicSortSheet
+import com.music.app.core.designsystem.component.sheet.sortAction
+import com.music.app.core.designsystem.component.topBarBackground
+import com.music.app.core.designsystem.theme.MusicComponentStyle
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.model.Track
+import com.music.app.core.model.sort.SortCriterion
+import com.music.app.core.model.sort.SortOrder
+import com.music.app.core.navigation.Screen
+import com.music.app.core.vault.VaultRepository
+import com.music.app.core.vault.VaultState
+import com.music.app.core.vault.data.VaultItem
+import com.music.app.feature.playback.PlaybackController
+import com.music.app.feature.playback.PlaybackSpace
+import com.music.app.feature.vault.R
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import com.music.app.core.designsystem.icon.MusicIcons
+
+/**
+ * The Private Folder, open: its Videos and Tracks. Settings opens it on the screen it stands at - see
+ * [rememberPrivateFolderOpener] - so setting it up and its PIN are screens of their own before this one.
+ * Locking it - leaving the app, or leaving this screen - ends whatever of it was playing, and shows nothing
+ * of what it held: locked while away, it hands its place back to the PIN screen as the app returns.
+ *
+ * Its media plays in the app's own players - the video player, and the player over this screen, which is
+ * the folder's alone: see [Screen.isPrivate].
+ */
+data object PrivateFolderScreen : Screen {
+    override val isPrivate: Boolean get() = true
+
+    @Composable
+    override fun Content() {
+        val navigator = LocalNavigator.current
+        val viewModel: PrivateFolderViewModel = hiltViewModel()
+        val vault by viewModel.state.collectAsStateWithLifecycle()
+        val entryScreen = vault.entryScreen()
+        val isOpen = entryScreen == PrivateFolderScreen
+
+        LaunchedEffect(entryScreen) {
+            if (entryScreen != null && !isOpen) {
+                navigator.go(entryScreen)
+                navigator.close()
+            }
+        }
+
+        if (isOpen) {
+            PrivateFolderContent(viewModel)
+        } else {
+            MusicTopAppBar(title = stringResource(R.string.vault_title), onNavigateBack = navigator::back)
+        }
+    }
+}
+
+/** The Private Folder's tabs, in order: its videos, then its tracks. */
+private const val TabCount = 2
+
+@Composable
+private fun PrivateFolderContent(viewModel: PrivateFolderViewModel) {
+    val navigator = LocalNavigator.current
+    val pagerState = rememberPagerState(pageCount = { TabCount })
+    val scope = rememberCoroutineScope()
+    val playingItemId by viewModel.playingItemId.collectAsStateWithLifecycle()
+    val resumePositionsMs = viewModel.resumePositionsMs.collectAsStateWithLifecycle()
+    var optionsItem by remember { mutableStateOf<VaultItem?>(null) }
+    // The tab whose list is being sorted - its videos, or its tracks - while its sheet is open.
+    var sortingVideos by remember { mutableStateOf<Boolean?>(null) }
+    // One selection across both tabs, as the library's picker keeps one; its action waiting on its confirmation.
+    val selection = rememberSelectionState()
+    var selectionAction by remember { mutableStateOf<VaultItemAction?>(null) }
+    val videos by viewModel.videos.collectAsStateWithLifecycle()
+    val tracks by viewModel.tracks.collectAsStateWithLifecycle()
+    val shownItems = if (pagerState.settledPage == 0) videos else tracks
+
+    MusicExtendedFloatingActionButtons(
+        listOf(
+            ExtendedFloatingActionButtonContent(
+                label = stringResource(R.string.vault_add),
+                icon = MusicIcons.Add,
+                onClick = { navigator.go(viewModel.pickerScreen(startsOnVideos = pagerState.settledPage == 0)) },
+                isPrimary = true,
+                isVisible = !selection.isActive,
+            ),
+        ),
+    )
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // The bar and the tabs are one section, lifting as one once the list leaves its top - as the library's do.
+        Column(modifier = Modifier.topBarBackground()) {
+            MusicTopAppBar(
+                title = stringResource(R.string.vault_title),
+                drawsBackground = false,
+                onNavigateBack = navigator::back,
+                actions = listOf(
+                    sortAction { sortingVideos = pagerState.settledPage == 0 },
+                    TopBarAction(label = stringResource(R.string.vault_settings), icon = MusicIcons.Settings) { navigator.go(PrivateFolderSettingsScreen) },
+                ),
+                selection = selection.toTopBarSelection(
+                    actions = listOf(
+                        selection.selectAllAction(shownItems.orEmpty().map(VaultItem::id)),
+                        TopBarAction(label = stringResource(R.string.vault_move_out), icon = MusicIcons.LockOpen) { selectionAction = VaultItemAction.MOVE_OUT },
+                        TopBarAction(label = stringResource(R.string.vault_delete_permanently), icon = MusicIcons.Delete) { selectionAction = VaultItemAction.DELETE },
+                    ),
+                    onMoreOptions = null,
+                ),
+            )
+            MusicTabRow(
+                tabTitles = listOf(stringResource(R.string.vault_videos), stringResource(R.string.vault_tracks)),
+                selectedPosition = { pagerState.currentPage + pagerState.currentPageOffsetFraction },
+                onTabClick = { page -> scope.launch { pagerState.animateScrollToPage(page) } },
+                modifier = Modifier.padding(vertical = 8.dp),
+                edgePadding = MusicComponentStyle.ContentHorizontalPadding,
+            )
+        }
+        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize(), beyondViewportPageCount = 1) { page ->
+            val isVideo = page == 0
+            val items = if (isVideo) videos else tracks
+            val sectionOf by (if (isVideo) viewModel.videoSections else viewModel.trackSections).collectAsStateWithLifecycle()
+            VaultItemList(
+                items = items,
+                sectionOf = sectionOf,
+                isVideo = isVideo,
+                selection = selection,
+                playingItemId = playingItemId,
+                resumePositionMsOf = { item -> resumePositionsMs.value[item.id] ?: 0L },
+                trackOf = viewModel::trackOf,
+                onPlay = { item -> viewModel.play(item, items.orEmpty()) },
+                onOpenOptions = { optionsItem = it },
+            )
+        }
+    }
+
+    optionsItem?.let { item -> VaultItemOptions(item = item, onDismissRequest = { optionsItem = null }) }
+
+    selectionAction?.let { action ->
+        val selected = (videos.orEmpty() + tracks.orEmpty()).filter { selection.isSelected(it.id) }
+        VaultItemsDialog(
+            items = selected,
+            action = action,
+            onDismiss = { selectionAction = null },
+            // Only what was done leaves the selection: whatever could not be stays picked, to try again.
+            onDone = { done -> selection.deselectAll(done.map(VaultItem::id)) },
+        )
+    }
+
+    sortingVideos?.let { isVideo ->
+        val order by viewModel.sortOrder(isVideo).collectAsStateWithLifecycle()
+        order?.let { initialOrder ->
+            MusicSortSheet(
+                criteria = viewModel.sortCriteria,
+                initialOrder = initialOrder,
+                onApply = { chosen, _ -> viewModel.setSortOrder(isVideo, chosen) },
+                onDismiss = { sortingVideos = null },
+            )
+        }
+    }
+}
+
+/**
+ * One tab's items - nothing while still being read, so the list never flashes empty first - with the section each sits
+ * in under the tab's sort, [sectionOf], named in the fast scroller's popup.
+ */
+@Composable
+private fun VaultItemList(
+    items: List<VaultItem>?,
+    sectionOf: (VaultItem) -> String?,
+    isVideo: Boolean,
+    selection: SelectionState,
+    playingItemId: Long?,
+    resumePositionMsOf: (VaultItem) -> Long,
+    trackOf: (VaultItem) -> Track,
+    onPlay: (VaultItem) -> Unit,
+    onOpenOptions: (VaultItem) -> Unit,
+) {
+    if (items == null) return
+    if (items.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(if (isVideo) R.string.vault_no_videos else R.string.vault_no_tracks), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = stringResource(if (isVideo) R.string.vault_add_videos_hint else R.string.vault_add_tracks_hint),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+        return
+    }
+    val listState = rememberLazyListState()
+    val dragSelection = rememberDragSelection(selection, listState, remember(items) { items.map(VaultItem::id) })
+    FastScroller(
+        listState = listState,
+        modifier = Modifier.fillMaxSize(),
+        sectionAt = { index -> items.getOrNull(index)?.let(sectionOf) },
+    ) { overscrollEffect ->
+        CompositionLocalProvider(LocalDragSelection provides dragSelection) {
+            LazyColumn(
+                state = listState,
+                overscrollEffect = overscrollEffect,
+                modifier = Modifier.fillMaxSize().dragSelection(dragSelection),
+                contentPadding = PaddingValues(bottom = LocalBottomContentPadding.current),
+            ) {
+                items(items, key = VaultItem::id) { item ->
+                    val isCurrent = item.id == playingItemId
+                    val track = remember(item) { trackOf(item) }
+                    if (item.isVideo) {
+                        MusicVideoRow(
+                            video = track,
+                            resumePositionMs = { resumePositionMsOf(item) },
+                            isCurrent = { isCurrent },
+                            isPlaying = { false },
+                            selection = selection,
+                            selectionKey = item.id,
+                            onClick = { onPlay(item) },
+                            onOpenOptions = { onOpenOptions(item) },
+                        )
+                        return@items
+                    }
+                    MusicListRow(
+                        title = item.title,
+                        subtitle = item.subtitle,
+                        selection = selection,
+                        selectionKey = item.id,
+                        onClick = { onPlay(item) },
+                        onOpenOptions = { onOpenOptions(item) },
+                        isCurrent = isCurrent,
+                    ) { isSelected ->
+                        MusicCoverArt(coverArtUri = track.coverArtUri, contentDescription = null, isCurrent = isCurrent, isSelected = isSelected)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@HiltViewModel
+internal class PrivateFolderViewModel @Inject constructor(
+    private val vault: VaultRepository,
+    private val playbackController: PlaybackController,
+    private val picker: PrivateFolderPicker,
+) : ViewModel() {
+
+    /** The library's picker its Add opens, to move tracks and videos in - on the tab it is opened from. */
+    fun pickerScreen(startsOnVideos: Boolean): Screen = picker.screen(startsOnVideos)
+
+    val state: StateFlow<VaultState> = vault.state
+
+    val videos: StateFlow<List<VaultItem>?> =
+        vault.items(isVideo = true).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val tracks: StateFlow<List<VaultItem>?> =
+        vault.items(isVideo = false).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** What either tab can be sorted by. */
+    val sortCriteria: List<SortCriterion> get() = vault.sortCriteria
+
+    /** The section each video - or, for [trackSections], each track - sits in under its tab's sort. */
+    val videoSections: StateFlow<(VaultItem) -> String?> =
+        vault.sections(isVideo = true).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000)) { null }
+
+    val trackSections: StateFlow<(VaultItem) -> String?> =
+        vault.sections(isVideo = false).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000)) { null }
+
+    private val videoSortOrder: StateFlow<SortOrder?> =
+        vault.sortOrder(isVideo = true).stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private val trackSortOrder: StateFlow<SortOrder?> =
+        vault.sortOrder(isVideo = false).stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** How the videos' tab - or, unless [isVideo], the tracks' - is sorted: null until read. */
+    fun sortOrder(isVideo: Boolean): StateFlow<SortOrder?> = if (isVideo) videoSortOrder else trackSortOrder
+
+    fun setSortOrder(isVideo: Boolean, order: SortOrder) {
+        viewModelScope.launch { vault.setSortOrder(isVideo, order) }
+    }
+
+    /** Where each video was left - see [VaultRepository.resumePositionsMs]. */
+    val resumePositionsMs: StateFlow<Map<Long, Long>> =
+        vault.resumePositionsMs.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
+    /** The item playing, which its row marks - null while the library plays. */
+    val playingItemId: StateFlow<Long?> = playbackController.playbackState
+        .map { playback -> playback.currentTrackId.takeIf { playback.space == PlaybackSpace.Private } }
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    init {
+        // Locked - the app left - nothing of the folder plays on.
+        viewModelScope.launch {
+            vault.state.collect { state ->
+                if (state !is VaultState.Created || !state.isUnlocked) playbackController.endPrivatePlayback()
+            }
+        }
+    }
+
+    fun trackOf(item: VaultItem): Track = vault.trackOf(item)
+
+    /**
+     * Plays [items] - the tab's - from [item], as a library list plays: a video watched in the video player, a
+     * track in the player over the folder. The one playing pauses or resumes instead, and a video playing as
+     * audio is watched again.
+     */
+    fun play(item: VaultItem, items: List<VaultItem>) {
+        if (item.id == playingItemId.value) {
+            if (item.isVideo) playbackController.watchCurrent() else playbackController.togglePlayPause()
+            return
+        }
+        val index = items.indexOfFirst { it.id == item.id }
+        if (index >= 0) playbackController.playPrivateTracks(items.map(vault::trackOf), index)
+    }
+
+    /** Leaving the folder - not turning the screen, which keeps this - locks it and ends its playback. */
+    override fun onCleared() {
+        vault.lock()
+        playbackController.endPrivatePlayback()
+    }
+}

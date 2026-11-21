@@ -1,0 +1,60 @@
+package com.music.app.feature.tageditor
+
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.music.app.core.model.Track
+import com.music.app.feature.tageditor.lookup.CatalogueMatch
+import com.music.app.feature.tageditor.tags.CoverChoice
+import com.music.app.feature.tageditor.tags.TagFileInfo
+import com.music.app.feature.tageditor.tags.TrackTags
+import kotlinx.coroutines.CoroutineScope
+
+/**
+ * [track]'s tags as a [SongDraft] over the [original] its [file] holds - made from the track alone, so whatever shows it
+ * has it from its first frame, and taking the file's tags as they are read - the one state the tag editor edits a track
+ * in, and an auto-tag run each of its tracks. Nothing here reaches the file: whoever holds the draft saves it.
+ */
+@Stable
+class TrackTagDraft(
+    track: Track,
+    scope: CoroutineScope,
+) : SongDraft(track.durationMs, scope) {
+    /** The track - at its file's new path, or as its new format, once the editor renames, moves or converts it. */
+    var track by mutableStateOf(track)
+        internal set
+
+    /** What the user has made of the draft - its tags, its cover and the match they came from - to come back to. */
+    data class Edits(val tags: TrackTags, val cover: CoverChoice, val appliedMatch: CatalogueMatch?, val link: String = "")
+
+    /** What the file held as it was read, or null until it has been - see [takeFile]. */
+    var file by mutableStateOf<TagFileInfo?>(null)
+        private set
+
+    val original: TrackTags get() = file?.tags ?: TrackTags()
+
+    /** Takes what the file holds, read, as what the draft starts from - before anything can be applied over it. */
+    fun takeFile(info: TagFileInfo) {
+        file = info
+        tags = info.tags
+    }
+
+    val hasChanges: Boolean get() = tags != original || cover != CoverChoice.Own
+
+    /**
+     * A video's link - the page it came from, which its details are read again from - kept in its file with those details
+     * rather than as a tag: see `EmbeddedExtras`. Empty for a song, and for a video that names none.
+     */
+    var link by mutableStateOf("")
+
+    val edits: Edits get() = Edits(tags, cover, appliedMatch, link)
+
+    /** Goes back to [edits], as the draft stood when they were taken. */
+    fun restore(edits: Edits) {
+        tags = edits.tags
+        cover = edits.cover
+        appliedMatch = edits.appliedMatch
+        link = edits.link
+    }
+}

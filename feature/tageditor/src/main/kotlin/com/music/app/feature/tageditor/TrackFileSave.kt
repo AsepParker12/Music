@@ -1,0 +1,120 @@
+package com.music.app.feature.tageditor
+
+import android.app.Activity
+import android.app.RecoverableSecurityException
+import android.content.IntentSender
+import android.os.Build
+import android.provider.MediaStore
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.platform.LocalContext
+import com.music.app.core.common.permission.AppPermission
+import com.music.app.core.designsystem.component.permission.rememberPermissionRequest
+import com.music.app.core.data.contentUri
+import com.music.app.core.designsystem.component.toast
+import com.music.app.core.model.Track
+import kotlinx.coroutines.CancellationException
+
+/** How saving into a track's file ended: done, waiting on the user to let Music change the file, or failed. */
+sealed interface SaveOutcome {
+    data object Saved : SaveOutcome
+    data class NeedsConsent(val request: IntentSender) : SaveOutcome
+    data class Failed(val reason: String?, @StringRes val fallback: Int) : SaveOutcome
+}
+
+/**
+ * Runs [write] - a save into a track's file - and tells how it went: where Android has not let Music change the
+ * file yet, it asks the user, once for that file; any other failure says why, or [failureMessage] where it does not.
+ */
+internal suspend fun saveOutcomeOf(@StringRes failureMessage: Int, write: suspend () -> Unit): SaveOutcome =
+    try {
+        write()
+        SaveOutcome.Saved
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && e is RecoverableSecurityException) {
+            SaveOutcome.NeedsConsent(e.userAction.actionIntent.intentSender)
+        } else {
+            SaveOutcome.Failed(e.message, failureMessage)
+        }
+    }
+
+/**
+ * What a screen that saves into [track]'s file needs to do so - what its save button calls, which gets whatever
+ * Android wants first - see [rememberFileChangeRequest] - then [save]s.
+ *
+ * The save's [outcome] is acted on once it arrives: [onSaved] once done, the user asked where Android wants
+ * consent - saving again once given - and why where it failed; then [onOutcomeHandled] clears it.
+ */
+@Composable
+internal fun rememberTrackFileSave(
+    track: Track?,
+    outcome: SaveOutcome?,
+    save: () -> Unit,
+    onSaved: () -> Unit,
+    onOutcomeHandled: () -> Unit,
+): () -> Unit {
+    val context = LocalContext.current
+    val latestSave by rememberUpdatedState(save)
+    val latestOnSaved by rememberUpdatedState(onSaved)
+    val latestOnOutcomeHandled by rememberUpdatedState(onOutcomeHandled)
+    val consentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) latestSave()
+    }
+    val requestChange = rememberFileChangeRequest(onGranted = save)
+
+    LaunchedEffect(outcome) {
+        when (outcome) {
+            null -> return@LaunchedEffect
+            SaveOutcome.Saved -> latestOnSaved()
+            is SaveOutcome.NeedsConsent -> consentLauncher.launch(IntentSenderRequest.Builder(outcome.request).build())
+            is SaveOutcome.Failed -> context.toast(outcome.reason ?: context.getString(outcome.fallback))
+        }
+        latestOnOutcomeHandled()
+    }
+
+    return { if (track != null) requestChange(listOf(track)) }
+}
+
+/**
+ * Gets Music the access to change any file - to manage all files, or, on Android before 11, to write to storage - then calls
+ * [onGranted]: what a file renamed, moved or converted needs, which Android's request for a media file's change does not cover.
+ */
+@Composable
+fun rememberFileAccessRequest(onGranted: () -> Unit): () -> Unit =
+    rememberPermissionRequest(AppPermission.STORAGE) { granted -> if (granted) onGranted() }
+
+/**
+ * Gets whatever Android wants before Music changes the files of the tracks it is called with, then calls [onGranted].
+ * Music writes freely where it may manage all files; elsewhere Android asks the user first, once for all of them -
+ * and a file MediaStore has not indexed, which Android's request cannot name, needs that access outright.
+ */
+@Composable
+fun rememberFileChangeRequest(onGranted: () -> Unit): (List<Track>) -> Unit {
+    val context = LocalContext.current
+    val latestOnGranted by rememberUpdatedState(onGranted)
+    val consentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) latestOnGranted()
+    }
+    val requestFileAccess = rememberFileAccessRequest(onGranted)
+
+    return { tracks ->
+        val permission = AppPermission.STORAGE
+        when {
+            tracks.isEmpty() -> Unit
+            permission.isGranted(context) || permission.runtimePermission != null || tracks.any { it.isManuallyScanned } -> requestFileAccess()
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> {
+                val request = MediaStore.createWriteRequest(context.contentResolver, tracks.map { it.contentUri })
+                consentLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
+            }
+            else -> latestOnGranted()
+        }
+    }
+}

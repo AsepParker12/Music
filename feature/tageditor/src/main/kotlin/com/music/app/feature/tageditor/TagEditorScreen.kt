@@ -1,0 +1,159 @@
+package com.music.app.feature.tageditor
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.designsystem.component.KeyboardAwareBackHandler
+import com.music.app.core.designsystem.component.LocalBottomContentPadding
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.fab.ExtendedFloatingActionButtonContent
+import com.music.app.core.designsystem.component.fab.MusicExtendedFloatingActionButtons
+import com.music.app.core.designsystem.component.WindowBusyOverlay
+import com.music.app.core.designsystem.component.fastscroll.FastScroller
+import com.music.app.core.designsystem.component.toast
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.tageditor.R
+import com.music.app.feature.tageditor.lyricseditor.DiscardChangesDialog
+import com.music.app.feature.tageditor.lyricseditor.LyricsEditorScreen
+import com.music.app.core.designsystem.icon.MusicIcons
+
+/**
+ * Editing the track [trackId]'s tags - AutomaTag's editor, in Music's design.
+ *
+ * It opens looking the track up already, under the likeliest reading of its names - laid out at the top, to be
+ * changed and searched again. What it finds fills the screen as it arrives: the best match, applied whole with
+ * one press, every tag to change by hand, every cover to choose from - the gallery's included, found or not -
+ * every set of lyrics every source has, and the other matches; each list narrowed to one source in a tap.
+ * Nothing reaches the file until it is saved - see [rememberTrackFileSave]; back leaves it as it was.
+ *
+ * Saving writes the file itself. Music does so freely where it may manage all files; elsewhere Android asks the
+ * user first, once for this file - and a file MediaStore has not indexed, which Android's request cannot name,
+ * needs that access outright.
+ *
+ * [isInAutoTagRun], it edits the run's draft for the track instead - everything the run found, the best already
+ * taken - and Done keeps it in the run, to be saved with the rest; back leaves it as the run had it.
+ */
+data class TagEditorScreen(val trackId: Long, val isInAutoTagRun: Boolean = false) : Screen {
+
+    @Composable
+    override fun Content() {
+        val context = LocalContext.current
+        val navigator = LocalNavigator.current
+        val viewModel = hiltViewModel<TagEditorViewModel, TagEditorViewModel.Factory>(
+            creationCallback = { factory -> factory.create(trackId, isInAutoTagRun) },
+        )
+        val draft = viewModel.draft
+        val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
+
+        // A run's track the run no longer holds - saved, or let go meanwhile - has nothing left to edit.
+        LaunchedEffect(viewModel) { if (isInAutoTagRun && draft == null) navigator.close() }
+
+        // Acted on once the save has let go of the screen - back included - so leaving it after a save gets
+        // through; a save that did not succeed stays, to be tried again.
+        val requestSave = rememberTrackFileSave(
+            track = draft?.track,
+            outcome = viewModel.saveOutcome,
+            save = viewModel::save,
+            onSaved = {
+                if (!isInAutoTagRun) context.toast(context.getString(R.string.tag_editor_saved))
+                // Closed outright: going back would ask whether to leave the changes just saved.
+                navigator.close()
+            },
+            onOutcomeHandled = viewModel::onSaveOutcomeHandled,
+        )
+        LifecycleStartEffect(viewModel) {
+            val release = viewModel.holdPlayingTrack()
+            onStopOrDispose { release() }
+        }
+        var isConfirmingDiscard by rememberSaveable { mutableStateOf(false) }
+        val scrollState = rememberScrollState()
+
+        // The whole window held while the file is written and the library reads it back - and back with it, so
+        // the save is never left halfway, with the file changed and the lists not yet showing it. Putting the
+        // keyboard away is never asking to leave - see [KeyboardAwareBackHandler].
+        WindowBusyOverlay(isBusy = viewModel.isSaving || viewModel.isChangingFile)
+        KeyboardAwareBackHandler(enabled = viewModel.hasChanges && !viewModel.isSaving) { isConfirmingDiscard = true }
+        BackHandler(enabled = viewModel.isSaving || viewModel.isChangingFile) {}
+        viewModel.fileChangeFailure?.let { failure ->
+            LaunchedEffect(failure) {
+                context.toast(context.getString(failure.messageRes, failure.detail.orEmpty()))
+                viewModel.onFileChangeFailureShown()
+            }
+        }
+
+        // The screen's button, as the lyrics editor's: growing in once there is something to keep.
+        MusicExtendedFloatingActionButtons(
+            listOf(
+                ExtendedFloatingActionButtonContent(
+                    label = stringResource(if (isInAutoTagRun) R.string.tag_editor_done else R.string.tag_editor_save),
+                    icon = MusicIcons.Check,
+                    // A run's draft reaches no file here, so there is nothing to ask Android first.
+                    onClick = { if (isInAutoTagRun) viewModel.save() else requestSave() },
+                    isPrimary = true,
+                    isVisible = viewModel.hasChanges && !viewModel.isSaving,
+                ),
+            ),
+        )
+
+        if (isConfirmingDiscard) {
+            DiscardChangesDialog(
+                onKeepEditing = { isConfirmingDiscard = false },
+                // Closed outright: going back would only ask again.
+                onDiscard = {
+                    viewModel.discardChanges()
+                    navigator.close()
+                },
+            )
+        }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            MusicTopAppBar(
+                title = stringResource(if (draft?.track?.isVideo == true) R.string.tag_editor_video_title else R.string.tag_editor_title),
+                onNavigateBack = navigator::back,
+            )
+            if (draft == null) return@Column
+
+            val track = draft.track
+            // Above the keyboard, so the field it opens for is scrolled into view rather than the window slid.
+            FastScroller(scrollState, Modifier.fillMaxSize().imePadding()) { overscrollEffect ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState, overscrollEffect = overscrollEffect)
+                        .padding(bottom = LocalBottomContentPadding.current),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    TrackTagDraftSections(
+                        draft = draft,
+                        isPlaying = isPlaying,
+                        onTogglePlayback = viewModel::togglePlayback,
+                        onEditLyrics = { navigator.go(LyricsEditorScreen(trackId, editsTagDraft = true)) },
+                    )
+
+                    HorizontalDivider()
+                    TrackFileSection(track, draft.file?.bitrateKbps, viewModel)
+                }
+            }
+        }
+    }
+}
+

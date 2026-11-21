@@ -1,0 +1,229 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
+package com.music.app.feature.tageditor.autotag
+
+import com.music.app.core.designsystem.component.animateProgressAsState
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularWavyProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.music.app.core.designsystem.component.SelectionState
+import com.music.app.core.designsystem.component.MusicChoiceRow
+import com.music.app.core.designsystem.component.MusicCoverArt
+import com.music.app.core.designsystem.component.MusicFolderCover
+import com.music.app.core.designsystem.component.MusicListRow
+import com.music.app.core.designsystem.component.section.SectionMotion
+import com.music.app.core.designsystem.icon.MusicIcons
+import com.music.app.core.designsystem.theme.MusicComponentStyle
+import com.music.app.core.designsystem.theme.buttonPressShapes
+import com.music.app.core.model.Folder
+import com.music.app.feature.tageditor.R
+import com.music.app.feature.tageditor.uriOr
+import com.music.app.feature.tageditor.tags.TagField
+
+private val ContentPadding = MusicComponentStyle.ContentHorizontalPadding
+
+/** The run's tracks, as many as its folders hold - pressed, which folders those are. */
+@Composable
+internal fun TracksRow(trackCount: Int, folders: List<Pair<Folder, Int>>, leftOut: Set<String>, onClick: () -> Unit) {
+    // A folder some of whose files are left out is still in the run.
+    val kept = folders.count { (folder, _) -> folder.path !in leftOut }
+    MusicListRow(
+        title = tracksLabel(trackCount),
+        subtitle = if (kept == folders.size) {
+            pluralStringResource(R.plurals.autotag_all_folders, folders.size, folders.size)
+        } else {
+            pluralStringResource(R.plurals.autotag_some_folders, folders.size, kept, folders.size)
+        },
+        selection = null,
+        selectionKey = null,
+        onClick = onClick,
+        onOpenOptions = null,
+        cover = { MusicFolderCover(coverArtUris = folders.flatMap { it.first.coverArtUris }.distinct(), seed = 0) },
+    )
+}
+
+/** What the run finds - tags, a cover, lyrics - each pressed in or out. */
+@Composable
+internal fun FindChoices(choices: AutoTagChoices, onChange: (AutoTagChoices) -> Unit) {
+    Row(
+        modifier = Modifier.padding(horizontal = ContentPadding, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(MusicComponentStyle.ItemSpacing),
+    ) {
+        FilterChip(selected = choices.findsTags, onClick = { onChange(choices.copy(findsTags = !choices.findsTags)) }, label = { Text(stringResource(R.string.autotag_find_choice_tags)) })
+        FilterChip(selected = choices.findsCover, onClick = { onChange(choices.copy(findsCover = !choices.findsCover)) }, label = { Text(stringResource(R.string.autotag_find_choice_cover)) })
+        FilterChip(selected = choices.findsLyrics, onClick = { onChange(choices.copy(findsLyrics = !choices.findsLyrics)) }, label = { Text(stringResource(R.string.autotag_find_choice_lyrics)) })
+    }
+}
+
+/**
+ * What only some want to change, folded away until pressed open: whether what the file already holds is replaced
+ * by what is found, or kept with only its blanks filled.
+ */
+@Composable
+internal fun AdvancedChoices(choices: AutoTagChoices, onChange: (AutoTagChoices) -> Unit) {
+    var isExpanded by rememberSaveable { mutableStateOf(false) }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { isExpanded = !isExpanded }
+                .padding(horizontal = ContentPadding, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(stringResource(R.string.autotag_advanced), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Icon(if (isExpanded) MusicIcons.ExpandLess else MusicIcons.ExpandMore, contentDescription = null)
+        }
+        val fade = SectionMotion.fade()
+        AnimatedVisibility(
+            visible = isExpanded,
+            enter = expandVertically(SectionMotion.size, expandFrom = Alignment.Top) + fadeIn(fade),
+            exit = shrinkVertically(SectionMotion.size, shrinkTowards = Alignment.Top) + fadeOut(fade),
+        ) {
+            Column {
+                Text(
+                    stringResource(R.string.autotag_existing_values),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = ContentPadding),
+                )
+                MusicChoiceRow(
+                    label = stringResource(R.string.autotag_replace),
+                    selected = !choices.fillsBlanksOnly,
+                    onClick = { onChange(choices.copy(fillsBlanksOnly = false)) },
+                )
+                MusicChoiceRow(
+                    label = stringResource(R.string.autotag_keep),
+                    selected = choices.fillsBlanksOnly,
+                    onClick = { onChange(choices.copy(fillsBlanksOnly = true)) },
+                )
+            }
+        }
+    }
+}
+
+/** The status slot's size - a list cover's, so the panel's text starts where every row's below it does. */
+private val StatusSize = 40.dp
+
+/**
+ * How far the run is, pinned under the top bar and lifting with it as one section - see [AutoTagScreen]: what it is
+ * doing, how far along, and the one thing to do about it - stop looking up, or finish with the run. The status, the
+ * text and the button keep their places in every state; the progress bar under them folds away once the run waits
+ * on the user, and back as it works again, the list moving with it as a section's fold moves it.
+ */
+@Composable
+internal fun RunProgress(session: AutoTagSession, onStop: () -> Unit, onFinish: () -> Unit) {
+    val phase = session.phase
+    val isWorking = phase != AutoTagPhase.REVIEWING
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = ContentPadding, end = ContentPadding, top = 4.dp, bottom = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(StatusSize), contentAlignment = Alignment.Center) {
+                if (isWorking) {
+                    CircularWavyProgressIndicator(modifier = Modifier.size(28.dp))
+                } else {
+                    Icon(MusicIcons.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                }
+            }
+            Column(modifier = Modifier.weight(1f).padding(horizontal = 16.dp)) {
+                Text(
+                    text = when (phase) {
+                        AutoTagPhase.MATCHING -> stringResource(R.string.autotag_phase_matching)
+                        AutoTagPhase.SAVING -> stringResource(R.string.autotag_phase_saving)
+                        AutoTagPhase.REVIEWING -> stringResource(R.string.autotag_phase_reviewing)
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = when (phase) {
+                        AutoTagPhase.REVIEWING -> pluralStringResource(R.plurals.autotag_review_progress, session.changedTrackIds.size, session.pickedItems.size, session.changedTrackIds.size)
+                        else -> pluralStringResource(R.plurals.autotag_progress, session.total, session.done, session.total)
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            FilledTonalButton(
+                onClick = if (phase == AutoTagPhase.MATCHING) onStop else onFinish,
+                // Saving is never left halfway, so there is nothing to press while it runs.
+                enabled = phase != AutoTagPhase.SAVING,
+                shapes = buttonPressShapes(),
+            ) {
+                Text(stringResource(if (phase == AutoTagPhase.REVIEWING) R.string.autotag_finish else R.string.autotag_stop))
+            }
+        }
+        val fade = SectionMotion.fade()
+        AnimatedVisibility(
+            visible = isWorking,
+            enter = expandVertically(SectionMotion.size, expandFrom = Alignment.Top) + fadeIn(fade),
+            exit = shrinkVertically(SectionMotion.size, shrinkTowards = Alignment.Top) + fadeOut(fade),
+        ) {
+            // Glides to each track done rather than stepping.
+            val progress by animateProgressAsState(if (session.total == 0) 0f else session.done.toFloat() / session.total)
+            LinearWavyProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp))
+        }
+    }
+}
+
+/**
+ * One track of the run, as saving would leave it - its cover and title - over what saving would change. Pressed, it
+ * is picked or unpicked; its pen opens it in the tag editor, on everything found for it.
+ */
+@Composable
+internal fun AutoTagRow(item: AutoTagItem, picks: SelectionState, onOpen: () -> Unit) {
+    val draft = item.draft
+    val trackId = item.track.id
+    MusicListRow(
+        title = draft?.tags?.get(TagField.TITLE)?.ifBlank { null } ?: item.track.title,
+        subtitle = item.summary,
+        selection = picks,
+        selectionKey = trackId.takeIf { item.hasChanges },
+        onClick = { if (item.hasChanges) picks.toggle(trackId) else onOpen() },
+        onOpenOptions = onOpen,
+        optionsIcon = MusicIcons.Edit,
+        optionsLabel = stringResource(R.string.autotag_edit_info),
+        cover = { isSelected ->
+            MusicCoverArt(
+                coverArtUri = draft?.cover?.uriOr(item.track.coverArtUri) ?: item.track.coverArtUri,
+                contentDescription = null,
+                isSelected = isSelected,
+            )
+        },
+    )
+}
+

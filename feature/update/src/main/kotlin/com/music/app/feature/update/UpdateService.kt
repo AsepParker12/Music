@@ -1,0 +1,176 @@
+package com.music.app.feature.update
+
+import android.app.Notification
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
+import com.music.app.core.common.notification.MusicNotificationChannel
+import com.music.app.core.common.notification.MusicNotificationId
+import com.music.app.core.common.notification.MusicNotifications
+import com.music.app.core.common.notification.startForegroundCompat
+import com.music.app.feature.update.github.Release
+import com.music.app.feature.update.github.ReleaseApk
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onEach
+import org.json.JSONObject
+
+/**
+ * Foreground service that runs one APK download to completion, independently of the UI: it survives
+ * the update dialog closing and the app being backgrounded. Progress is published to
+ * [UpdateRegistry] (for the dialog) and mirrored to a notification with a Stop action (for the
+ * shade). There is only ever one update download, so no per-item keying is needed.
+ */
+class UpdateService : Service() {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    @Volatile private var job: Job? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // startForegroundService() requires startForeground() within 5s on every delivery.
+        startForegroundCompat(MusicNotificationId.UPDATE_DOWNLOAD, progressNotification(UpdateRegistry.stateOf()))
+
+        when {
+            intent?.action == ACTION_CANCEL -> cancelDownload()
+            job?.isActive == true           -> Unit            // busy — ignore the new request
+            else                            -> startDownload(intent?.release(), intent?.variant())
+        }
+        return START_STICKY
+    }
+
+    /**
+     * Downloads [release] - the one the request named, which is how a notification's Download reaches a
+     * process that has only just started - or else the available update: its APK of [variant] when one was
+     * chosen, the one for the running build otherwise.
+     */
+    private fun startDownload(release: Release?, variant: ApkVariant?) {
+        val update = release?.also(UpdateRegistry::setAvailable) ?: UpdateRegistry.available.value
+        val apk = update?.let { variant?.let(it::apkOf) ?: it.apkFor(installedBuild()) } ?: run { stopNow(); return }
+        UpdateRegistry.update(UpdateState.Connecting)
+        job = ApkDownloader.download(applicationContext, apk)
+            .onEach { state ->
+                UpdateRegistry.update(state)
+                when (state) {
+                    UpdateState.Connecting, is UpdateState.Downloading ->
+                        notify(MusicNotificationId.UPDATE_DOWNLOAD, progressNotification(state))
+                    else -> Unit
+                }
+            }
+            .onCompletion { cause ->
+                job = null
+                // Normal completion (Downloaded/Error) leaves a dismissible result; a cancellation
+                // (cause != null) leaves nothing behind.
+                if (cause == null) postResult()
+                stopNow()
+            }
+            .launchIn(scope)
+    }
+
+    private fun cancelDownload() {
+        job?.cancel(); job = null
+        UpdateRegistry.update(UpdateState.Idle)
+        stopNow()
+    }
+
+    /** Removes the ongoing notification and stops the service. Safe to call more than once. */
+    private fun stopNow() {
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    // ── Notifications ─────────────────────────────────────────────────────────
+
+    private fun postResult() {
+        when (val s = UpdateRegistry.stateOf()) {
+            is UpdateState.Downloaded -> notify(MusicNotificationId.UPDATE_DOWNLOAD_RESULT, result())
+            is UpdateState.Error      -> notify(MusicNotificationId.UPDATE_DOWNLOAD_RESULT, error(s.message))
+            else                      -> Unit
+        }
+    }
+
+    private fun base(): NotificationCompat.Builder =
+        MusicNotifications.builder(this, MusicNotificationChannel.UPDATE_DOWNLOAD)
+            .setContentTitle(getString(R.string.update_notif_title))
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+
+    private fun progressNotification(state: UpdateState): Notification {
+        val downloading = state as? UpdateState.Downloading
+        val text = downloading?.let { "${it.sizeText(this)} · ${it.speedText(this)}" } ?: getString(R.string.update_connecting)
+        val progress = downloading?.progress
+        return base()
+            .setContentText(text)
+            .setOngoing(true)
+            .setProgress(100, ((progress ?: 0f) * 100).toInt(), progress == null)
+            .addAction(0, getString(R.string.update_stop), cancelIntent())
+            .build()
+    }
+
+    /** Completion notification: tapping it opens the Updates screen, where the downloaded APK is installed. */
+    private fun result(): Notification =
+        base()
+            .setContentText(getString(R.string.update_notif_ready))
+            .setAutoCancel(true)
+            .build()
+
+    private fun error(message: String): Notification =
+        base().setContentText(message).setAutoCancel(true).build()
+
+    private fun cancelIntent(): PendingIntent {
+        val intent = Intent(this, UpdateService::class.java).setAction(ACTION_CANCEL)
+        return PendingIntent.getService(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun notify(id: Int, notification: Notification) {
+        MusicNotifications.post(this, id, notification)
+    }
+
+    companion object {
+        private const val ACTION_CANCEL = "com.music.app.action.CANCEL_UPDATE"
+        private const val EXTRA_RELEASE = "com.music.app.extra.RELEASE"
+        private const val EXTRA_VARIANT = "com.music.app.extra.VARIANT"
+
+        /** Starts downloading [apk], one of [release]'s (no-op if a download is already running). */
+        fun start(context: Context, release: Release, apk: ReleaseApk) {
+            val intent = startIntent(context, release).putExtra(EXTRA_VARIANT, apk.variant.name)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /** What starts downloading [release]'s APK - from the app, or from a notification. */
+        internal fun startIntent(context: Context, release: Release): Intent =
+            Intent(context, UpdateService::class.java).putExtra(EXTRA_RELEASE, release.toJson().toString())
+
+        private fun Intent.release(): Release? =
+            getStringExtra(EXTRA_RELEASE)?.let { runCatching { Release.fromJson(JSONObject(it)) }.getOrNull() }
+
+        private fun Intent.variant(): ApkVariant? =
+            getStringExtra(EXTRA_VARIANT)?.let { name -> ApkVariant.entries.firstOrNull { it.name == name } }
+
+        /** Requests cancellation of the in-flight download. */
+        fun cancel(context: Context) {
+            val intent = Intent(context, UpdateService::class.java).setAction(ACTION_CANCEL)
+            ContextCompat.startForegroundService(context, intent)
+        }
+    }
+}

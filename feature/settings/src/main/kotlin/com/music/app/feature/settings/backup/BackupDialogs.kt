@@ -1,0 +1,373 @@
+package com.music.app.feature.settings.backup
+
+import android.text.format.Formatter
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.music.app.core.common.permission.AppPermission
+import com.music.app.core.designsystem.component.InfoSeparator
+import com.music.app.core.designsystem.component.actionButton
+import com.music.app.core.designsystem.component.dialog.MusicDialog
+import com.music.app.core.designsystem.component.dialog.MusicDialogSwitch
+import com.music.app.core.designsystem.component.toast
+import com.music.app.core.designsystem.theme.buttonPressShapes
+import com.music.app.core.model.Track
+import com.music.app.feature.backup.BackupFolder
+import com.music.app.feature.backup.BackupFolders
+import com.music.app.feature.backup.RestorePreview
+import com.music.app.feature.explorer.FolderPickerSheet
+import com.music.app.feature.explorer.FolderPickerTab
+import com.music.app.feature.settings.R
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.material3.OutlinedSecureTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+
+/** Asks for the passphrase backups are encrypted with from now on - twice, so a typo cannot lock them away. */
+@Composable
+internal fun NewPassphraseDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    val passphrase = rememberTextFieldState()
+    val repeated = rememberTextFieldState()
+    val typed = passphrase.text.toString()
+    val isMismatched = repeated.text.isNotEmpty() && repeated.text.toString() != typed
+    val canSave = typed.isNotEmpty() && repeated.text.toString() == typed
+    val cancelLabel = stringResource(R.string.dialog_cancel)
+    val saveLabel = stringResource(R.string.dialog_save)
+
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.backup_passphrase_title),
+        buttons = {
+            actionButton(label = cancelLabel, onClick = onDismiss)
+            actionButton(label = saveLabel, onClick = { onConfirm(typed) }, enabled = canSave)
+        },
+    ) {
+        Text(stringResource(R.string.backup_passphrase_note))
+        PassphraseField(passphrase, stringResource(R.string.backup_passphrase_hint), imeAction = ImeAction.Next)
+        PassphraseField(
+            state = repeated,
+            label = stringResource(R.string.backup_passphrase_repeat_hint),
+            error = stringResource(R.string.backup_passphrase_mismatch).takeIf { isMismatched },
+            onDone = { if (canSave) onConfirm(typed) },
+        )
+    }
+}
+
+/**
+ * What "Back up now" is about to do, at a glance: where the backup is saved, whose music and videos go to Google
+ * Drive with it, and over which connection.
+ */
+@Composable
+internal fun BackupNowDialog(
+    isDriveConnected: Boolean,
+    folders: List<BackupFolder>?,
+    usesMobileData: Boolean,
+    onBackUp: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val cancelLabel = stringResource(R.string.dialog_cancel)
+    val backUpLabel = stringResource(R.string.backup_now_action)
+
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.backup_now_title),
+        buttons = {
+            actionButton(label = cancelLabel, onClick = onDismiss)
+            actionButton(label = backUpLabel, onClick = onBackUp)
+        },
+    ) {
+        Fact(
+            label = stringResource(R.string.backup_now_saved_to),
+            value = stringResource(if (isDriveConnected) R.string.backup_now_device_and_drive else R.string.backup_now_device),
+        )
+        if (isDriveConnected) {
+            Fact(stringResource(R.string.backup_now_media), foldersSummary(folders).orEmpty())
+            Fact(
+                label = stringResource(R.string.backup_now_upload_over),
+                value = stringResource(if (usesMobileData) R.string.backup_now_any_network else R.string.backup_now_wifi),
+            )
+        }
+    }
+}
+
+/** Asks before stopping a backup under way. */
+@Composable
+internal fun StopBackupDialog(onPause: () -> Unit, onStop: () -> Unit, onDismiss: () -> Unit) {
+    val keepGoingLabel = stringResource(R.string.backup_stop_keep_going)
+    val pauseLabel = stringResource(R.string.backup_stop_pause)
+    val stopLabel = stringResource(R.string.backup_stop_action)
+
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.backup_stop_title),
+        buttons = {
+            actionButton(label = keepGoingLabel, onClick = onDismiss)
+            actionButton(label = pauseLabel, onClick = onPause)
+            actionButton(label = stopLabel, onClick = onStop)
+        },
+    ) {
+        Text(stringResource(R.string.backup_stop_message))
+    }
+}
+
+/** Asks where to delete [backup] from - each place it is kept, all chosen to begin with. */
+@Composable
+internal fun DeleteBackupDialog(
+    backup: RestorableBackup,
+    onDelete: (fromDevice: Boolean, fromDrive: Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var fromDevice by remember { mutableStateOf(backup.onDevice != null) }
+    var fromDrive by remember { mutableStateOf(backup.inDrive != null) }
+    val cancelLabel = stringResource(R.string.dialog_cancel)
+    val deleteLabel = stringResource(R.string.backup_delete_action)
+
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.backup_delete_title),
+        buttons = {
+            actionButton(label = cancelLabel, onClick = onDismiss)
+            actionButton(label = deleteLabel, onClick = { onDelete(fromDevice, fromDrive) }, enabled = fromDevice || fromDrive)
+        },
+    ) {
+        Text(formatDate(LocalContext.current, backup.createdAt))
+        if (backup.onDevice != null) CheckRow(stringResource(R.string.backup_delete_from_device), fromDevice) { fromDevice = it }
+        if (backup.inDrive != null) CheckRow(stringResource(R.string.backup_delete_from_drive), fromDrive) { fromDrive = it }
+    }
+}
+
+/**
+ * Restoring a backup, step by step as it is opened: opening it, asking for its passphrase, what restoring it
+ * would do - and, of the files this device is missing, the ones to bring back - or why it cannot be.
+ */
+@Composable
+internal fun RestoreDialog(
+    step: RestoreStep,
+    onPassphrase: (String) -> Unit,
+    onRestore: (filesToRestore: Set<String>) -> Unit,
+    onRetryDrive: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val cancelLabel = stringResource(R.string.dialog_cancel)
+    when (step) {
+        RestoreStep.Opening -> MusicDialog(
+            onDismissRequest = onDismiss,
+            title = stringResource(R.string.restore_dialog_title),
+            buttons = { actionButton(label = cancelLabel, onClick = onDismiss) },
+        ) {
+            Text(stringResource(R.string.restore_opening))
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 16.dp))
+        }
+
+        is RestoreStep.Passphrase -> {
+            val passphrase = rememberTextFieldState()
+            val typed = passphrase.text.toString()
+            val openLabel = stringResource(R.string.restore_ok)
+            MusicDialog(
+                onDismissRequest = onDismiss,
+                title = stringResource(R.string.restore_passphrase_title),
+                buttons = {
+                    actionButton(label = cancelLabel, onClick = onDismiss)
+                    actionButton(label = openLabel, onClick = { onPassphrase(typed) }, enabled = typed.isNotEmpty())
+                },
+            ) {
+                PassphraseField(
+                    state = passphrase,
+                    label = stringResource(R.string.backup_passphrase_hint),
+                    error = stringResource(R.string.restore_passphrase_wrong).takeIf { step.isWrong },
+                    onDone = { if (typed.isNotEmpty()) onPassphrase(typed) },
+                )
+            }
+        }
+
+        is RestoreStep.Ready -> RestorePreviewDialog(step.preview, onRestore, onRetryDrive, onDismiss)
+
+        is RestoreStep.Problem -> {
+            val okLabel = stringResource(R.string.restore_ok)
+            MusicDialog(
+                onDismissRequest = onDismiss,
+                title = stringResource(R.string.restore_dialog_title),
+                buttons = { actionButton(label = okLabel, onClick = onDismiss) },
+            ) {
+                Text(stringResource(step.messageRes))
+            }
+        }
+    }
+}
+
+/**
+ * What restoring a backup does, in brief: when it was made, that it adds to this device rather than replaces - and,
+ * where Drive keeps files this device lacks, which to download, every one to begin with. Their row says how many
+ * and how large; its switch takes all or none, and a press opens them by kind and folder to pick among. Where Drive
+ * could not be reached, that row's place says so, with Try again - [onRetryDrive] - and a toast says it as it opens.
+ */
+@Composable
+private fun RestorePreviewDialog(
+    preview: RestorePreview,
+    onRestore: (filesToRestore: Set<String>) -> Unit,
+    onRetryDrive: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val files = preview.files
+    var picked by remember(files) { mutableStateOf(files.all) }
+    var isPickingFiles by remember { mutableStateOf(false) }
+    val filesTitle = stringResource(R.string.restore_files_title)
+    val cancelLabel = stringResource(R.string.dialog_cancel)
+    val restoreLabel = stringResource(R.string.restore_action)
+
+    LaunchedEffect(preview) { if (preview.isDriveUnreachable) context.toast(R.string.restore_drive_unreachable) }
+
+    // The sheet stands in the dialog's place while it is open, rather than over it.
+    if (isPickingFiles) {
+        FolderPickerSheet(
+            title = filesTitle,
+            tabs = mediaPickerTabs(files.music, files.videos),
+            initiallyPicked = picked,
+            confirmLabel = { context.getString(R.string.restore_files_done) },
+            onConfirm = { picked = it },
+            onDismissRequest = { isPickingFiles = false },
+            isOnDevice = false,
+        )
+        return
+    }
+
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.restore_dialog_title),
+        buttons = {
+            actionButton(label = cancelLabel, onClick = onDismiss)
+            actionButton(
+                label = restoreLabel,
+                onClick = {
+                    val filesToRestore = files.fingerprintsOf(picked)
+                    // Files are written back where they were, which only managing all files allows.
+                    if (filesToRestore.isNotEmpty() && !AppPermission.STORAGE.isGranted(context)) {
+                        context.toast(R.string.restore_file_access_needed)
+                        context.startActivity(AppPermission.STORAGE.settingsIntent(context))
+                    } else {
+                        onRestore(filesToRestore)
+                    }
+                },
+            )
+        },
+    ) {
+        Text(
+            text = stringResource(R.string.restore_backed_up, formatDate(context, preview.createdAt)),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(text = stringResource(R.string.restore_merge_note), modifier = Modifier.padding(top = 8.dp, bottom = 8.dp))
+        if (preview.isDriveUnreachable) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                Text(
+                    text = stringResource(R.string.restore_drive_unreachable),
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onRetryDrive, shapes = buttonPressShapes()) { Text(stringResource(R.string.restore_drive_retry)) }
+            }
+        } else if (!files.isEmpty()) {
+            val music = files.pickedMusic(picked)
+            val videos = files.pickedVideos(picked)
+            MusicDialogSwitch(
+                label = filesTitle,
+                summary = mediaSummary(music, videos),
+                checked = music.isNotEmpty() || videos.isNotEmpty(),
+                onCheckedChange = { downloads -> picked = if (downloads) files.all else emptySet() },
+                onClick = { isPickingFiles = true },
+            )
+        }
+    }
+}
+
+/** Music and videos, each under its own tab and keyed by its kind; a kind with no file has no tab, nothing being under it to pick. */
+@Composable
+internal fun mediaPickerTabs(music: List<Track>, videos: List<Track>): List<FolderPickerTab> = listOf(
+    FolderPickerTab(stringResource(R.string.backup_folders_music), music, BackupFolders.MUSIC_KEY_PREFIX),
+    FolderPickerTab(stringResource(R.string.backup_folders_videos), videos, BackupFolders.VIDEOS_KEY_PREFIX),
+).filter { it.files.isNotEmpty() }
+
+/** "12 songs • 3 videos • 1.5 GB" - how many of each kind, and their size together - or None. */
+@Composable
+private fun mediaSummary(music: List<Track>, videos: List<Track>): String {
+    if (music.isEmpty() && videos.isEmpty()) return stringResource(R.string.backup_folders_none)
+    return listOfNotNull(
+        music.size.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.backup_folder_songs, it, it) },
+        videos.size.takeIf { it > 0 }?.let { pluralStringResource(R.plurals.backup_folder_videos, it, it) },
+        Formatter.formatShortFileSize(LocalContext.current, (music + videos).sumOf { it.sizeBytes }),
+    ).joinToString(InfoSeparator)
+}
+
+/**
+ * What [folders] back up to Drive, in a word or two: all of them, none, or how many - each folder counted once, its
+ * music and its videos alike, however many of them are chosen. Null while they are read.
+ */
+@Composable
+internal fun foldersSummary(folders: List<BackupFolder>?): String? {
+    val all = folders ?: return null
+    val backedUpPaths = all.filter { it.isBackedUp }.mapTo(HashSet()) { it.path }
+    return when {
+        backedUpPaths.isEmpty() -> stringResource(R.string.backup_folders_none)
+        all.all { it.isBackedUp } -> stringResource(R.string.backup_folders_all)
+        else -> pluralStringResource(R.plurals.backup_folders_count, backedUpPaths.size, backedUpPaths.size)
+    }
+}
+
+/** One thing a dialog says, as a label and its value on one line. */
+@Composable
+private fun Fact(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+        Text(value, textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+    }
+}
+
+/** A choice in a dialog, checked or not, the whole row its target. */
+@Composable
+private fun CheckRow(label: String, isChecked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().toggleable(isChecked, role = Role.Checkbox, onValueChange = onCheckedChange),
+    ) {
+        Checkbox(checked = isChecked, onCheckedChange = null)
+        Text(label, modifier = Modifier.padding(start = 8.dp))
+    }
+}
+
+/** A passphrase typed, hidden as Android hides one, the keyboard's [imeAction] going on to the next - or [onDone]. */
+@Composable
+private fun PassphraseField(state: TextFieldState, label: String, error: String? = null, imeAction: ImeAction = ImeAction.Done, onDone: () -> Unit = {}) {
+    OutlinedSecureTextField(
+        state = state,
+        label = { Text(label) },
+        isError = error != null,
+        supportingText = error?.let { { Text(it) } },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = imeAction),
+        onKeyboardAction = if (imeAction == ImeAction.Done) ({ onDone() }) else null,
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    )
+}

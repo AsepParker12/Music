@@ -1,0 +1,6 @@
+{
+  "versionCode": 109019000,
+  "versionName": "1.9.1",
+  "apkUrl": "https://github.com/AsepParker12/Music/releases/download/v1.9.1/music-1.9.1-release-universal.apk",
+  "notes": "### Added\n\n- Add Shields, browser settings and sign-ins for downloads.\n- Read videos' details again and name sites by their link.\n- Pause and resume running downloads, rename saved files.\n- Mark places on the seek bar, and edit a video's details.\n\n### Changed\n\n- Move text fields and sliders to Material's state-based APIs."
+}

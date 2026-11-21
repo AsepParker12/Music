@@ -1,0 +1,190 @@
+package com.music.app.feature.settings.screen
+
+import android.text.format.Formatter
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.data.lyrics.DictionaryState
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.settings.R
+import com.music.app.core.designsystem.component.settings.SettingsDownload
+import com.music.app.core.designsystem.component.settings.SettingsDownloadItem
+import com.music.app.core.designsystem.component.settings.SettingsList
+import com.music.app.core.designsystem.component.settings.SettingsNavigationItem
+import com.music.app.core.designsystem.component.settings.SettingsSection
+import com.music.app.core.designsystem.component.settings.SettingsSectionDivider
+import com.music.app.core.designsystem.component.settings.SettingsSliderItem
+import com.music.app.core.designsystem.component.settings.SettingsSwitchItem
+import java.util.Locale
+import kotlin.math.roundToInt
+
+/** How lyrics read, what they are romanized into, and whether missing ones are found online. Ported from ArchiveTune's `LyricsSettings`. */
+data object LyricsScreen : Screen {
+    override val titleRes: Int get() = R.string.lyrics_title
+
+    @Composable
+    override fun Content() {
+        val navigator = LocalNavigator.current
+        val viewModel: LyricsSettingsViewModel = hiltViewModel()
+        val lyricsClick by viewModel.lyricsClick.collectAsStateWithLifecycle()
+        val lyricsScroll by viewModel.lyricsScroll.collectAsStateWithLifecycle()
+        val lyricsLineBlur by viewModel.lyricsLineBlur.collectAsStateWithLifecycle()
+        val lyricsTextSize by viewModel.lyricsTextSize.collectAsStateWithLifecycle()
+        val lyricsLineSpacing by viewModel.lyricsLineSpacing.collectAsStateWithLifecycle()
+        val showLyricsPlayerControls by viewModel.showLyricsPlayerControls.collectAsStateWithLifecycle()
+        val romanizeArabic by viewModel.romanizeArabic.collectAsStateWithLifecycle()
+        val japaneseDictionary by viewModel.japaneseDictionaryState.collectAsStateWithLifecycle()
+        val romanizeJapanese by viewModel.romanizeJapanese.collectAsStateWithLifecycle()
+        val romanizeKorean by viewModel.romanizeKorean.collectAsStateWithLifecycle()
+        val romanizeChinese by viewModel.romanizeChinese.collectAsStateWithLifecycle()
+        val romanizeHindi by viewModel.romanizeHindi.collectAsStateWithLifecycle()
+        val romanizeOtherLanguages by viewModel.romanizeOtherLanguages.collectAsStateWithLifecycle()
+        val showsRomanizationOnly by viewModel.showsRomanizationOnly.collectAsStateWithLifecycle()
+        val romanizesAnyLanguage = romanizeArabic || (romanizeJapanese && japaneseDictionary == DictionaryState.Installed) ||
+            romanizeKorean || romanizeChinese || romanizeHindi || romanizeOtherLanguages
+        val findMissingLyrics by viewModel.findMissingLyrics.collectAsStateWithLifecycle()
+
+        val spFormat = stringResource(R.string.sp_format)
+        val lineSpacingFormat = stringResource(R.string.lyrics_line_spacing_format)
+
+        SettingsList {
+            SettingsSection(stringResource(R.string.lyrics_display_section)) {
+                SettingsNavigationItem(
+                    title = stringResource(R.string.lyrics_animation_style_title),
+                    summary = stringResource(R.string.lyrics_animation_style_summary),
+                    onClick = { navigator.go(LyricsAnimationScreen) },
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.lyrics_click_change_title),
+                    summary = stringResource(R.string.lyrics_click_change_summary),
+                    checked = lyricsClick,
+                    onCheckedChange = viewModel::setLyricsClick,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.lyrics_auto_scroll_title),
+                    summary = stringResource(R.string.lyrics_auto_scroll_summary),
+                    checked = lyricsScroll,
+                    onCheckedChange = viewModel::setLyricsScroll,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.lyrics_blur_title),
+                    summary = stringResource(R.string.lyrics_blur_summary),
+                    checked = lyricsLineBlur,
+                    onCheckedChange = viewModel::setLyricsLineBlur,
+                )
+                SettingsSliderItem(
+                    title = stringResource(R.string.lyrics_text_size_title),
+                    value = lyricsTextSize,
+                    onValueChangeFinished = viewModel::setLyricsTextSize,
+                    valueRange = 16f..36f,
+                    steps = 19,
+                    formatValue = { spFormat.format(it.roundToInt()) },
+                )
+                SettingsSliderItem(
+                    title = stringResource(R.string.lyrics_line_spacing_title),
+                    value = lyricsLineSpacing,
+                    onValueChangeFinished = viewModel::setLyricsLineSpacing,
+                    valueRange = 1.0f..2.0f,
+                    steps = 19,
+                    formatValue = { String.format(Locale.getDefault(), lineSpacingFormat, it) },
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.lyrics_show_player_controls_title),
+                    summary = stringResource(R.string.lyrics_show_player_controls_summary),
+                    checked = showLyricsPlayerControls,
+                    onCheckedChange = viewModel::setShowLyricsPlayerControls,
+                )
+            }
+
+            SettingsSectionDivider()
+
+            SettingsSection(stringResource(R.string.lyrics_romanization_section)) {
+                SettingsSwitchItem(
+                    title = stringResource(R.string.romanize_arabic_title),
+                    summary = stringResource(R.string.romanize_arabic_summary),
+                    checked = romanizeArabic,
+                    onCheckedChange = viewModel::setRomanizeArabic,
+                )
+                // Japanese alone needs data of its own - a 13 MB dictionary - so it is downloaded rather than
+                // shipped, and its switch works once it is here.
+                SettingsDownloadItem(
+                    title = stringResource(R.string.romanize_japanese_title),
+                    summary = japaneseDictionarySummary(japaneseDictionary),
+                    download = japaneseDictionary.asSettingsDownload(),
+                    checked = romanizeJapanese,
+                    onCheckedChange = viewModel::setRomanizeJapanese,
+                    onDownload = viewModel::downloadJapaneseDictionary,
+                    onCancel = viewModel::cancelJapaneseDictionary,
+                    onRemove = viewModel::removeJapaneseDictionary,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.romanize_korean_title),
+                    summary = stringResource(R.string.romanize_korean_summary),
+                    checked = romanizeKorean,
+                    onCheckedChange = viewModel::setRomanizeKorean,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.romanize_chinese_title),
+                    summary = stringResource(R.string.romanize_chinese_summary),
+                    checked = romanizeChinese,
+                    onCheckedChange = viewModel::setRomanizeChinese,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.romanize_hindi_title),
+                    summary = stringResource(R.string.romanize_hindi_summary),
+                    checked = romanizeHindi,
+                    onCheckedChange = viewModel::setRomanizeHindi,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.romanize_other_languages_title),
+                    summary = stringResource(R.string.romanize_other_languages_summary),
+                    checked = romanizeOtherLanguages,
+                    onCheckedChange = viewModel::setRomanizeOtherLanguages,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.lyrics_romanization_only_title),
+                    summary = stringResource(R.string.lyrics_romanization_only_summary),
+                    checked = showsRomanizationOnly,
+                    onCheckedChange = viewModel::setShowsRomanizationOnly,
+                    // Nothing is romanized for it to apply to while every language is off.
+                    enabled = romanizesAnyLanguage,
+                )
+            }
+
+            SettingsSectionDivider()
+
+            SettingsSection(stringResource(R.string.lyrics_online_section)) {
+                SettingsSwitchItem(
+                    title = stringResource(R.string.lyrics_find_missing_title),
+                    summary = stringResource(R.string.lyrics_find_missing_summary),
+                    checked = findMissingLyrics,
+                    onCheckedChange = viewModel::setFindMissingLyrics,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun japaneseDictionarySummary(state: DictionaryState): String {
+    val context = LocalContext.current
+    fun size(bytes: Long) = Formatter.formatShortFileSize(context, bytes)
+    return when (state) {
+        DictionaryState.Missing -> stringResource(R.string.romanize_japanese_download_summary)
+        is DictionaryState.Downloading ->
+            stringResource(R.string.romanize_japanese_downloading_summary, size(state.receivedBytes), size(state.totalBytes))
+        DictionaryState.Installed -> stringResource(R.string.romanize_japanese_summary)
+        DictionaryState.Failed -> stringResource(R.string.romanize_japanese_failed_summary)
+    }
+}
+
+private fun DictionaryState.asSettingsDownload(): SettingsDownload = when (this) {
+    DictionaryState.Missing -> SettingsDownload.Available
+    is DictionaryState.Downloading -> SettingsDownload.InProgress(progress)
+    DictionaryState.Installed -> SettingsDownload.Done
+    DictionaryState.Failed -> SettingsDownload.Failed
+}

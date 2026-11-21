@@ -1,0 +1,24 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- In-app update: install the downloaded APK (user grants "install unknown apps" once) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- With that grant, an update of Music itself installs without asking, from Android 12 on - see UpdateInstaller. -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+
+    <application>
+        <service
+            android:name="com.music.app.feature.update.UpdateService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- Hears what became of an install session - see UpdateInstaller. -->
+        <receiver
+            android:name="com.music.app.feature.update.UpdateInstallReceiver"
+            android:exported="false" />
+    </application>
+
+</manifest>

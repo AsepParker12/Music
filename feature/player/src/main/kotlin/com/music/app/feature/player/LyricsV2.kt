@@ -1,0 +1,1868 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
+package com.music.app.feature.player
+
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import com.music.app.core.designsystem.icon.MusicIcons
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.view.WindowManager
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularWavyProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.Placeable
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.data.lyrics.LyricsEntry
+import com.music.app.core.data.lyrics.LyricsRomanizationPreferences
+import com.music.app.core.data.lyrics.LyricsUtils.providedRomanizedTextForEntry
+import com.music.app.core.data.lyrics.LyricsUtils.shouldRomanizeLyricsLine
+import com.music.app.core.data.lyrics.WordTimestamp
+import com.music.app.core.designsystem.component.readingDirectionOf
+import com.music.app.core.designsystem.component.shimmer
+import com.music.app.core.designsystem.component.toast
+import com.music.app.core.designsystem.theme.buttonPressShapes
+import com.music.app.core.designsystem.theme.pillShape
+import com.music.app.core.designsystem.theme.roundedShape
+import com.music.app.core.model.Track
+import com.music.app.feature.tageditor.rememberFileChangeRequest
+import java.text.BreakIterator
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.PI
+import kotlin.math.sin
+import kotlin.random.Random
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+// ──────────────────────────────────────────────────────────────────────
+// Constants
+// ──────────────────────────────────────────────────────────────────────
+
+/** Seconds to wait before auto-scroll resumes after manual scroll. */
+private const val MANUAL_SCROLL_TIMEOUT_MS = 3000L
+
+/** How many lines can be selected to share at once. */
+private const val MAX_SELECTION_LIMIT = 5
+
+/** A line's text as sung: its words joined, where it has them. */
+private fun LyricsEntry.sungText(): String =
+    words?.joinToString(separator = "") { it.text }?.takeIf { it.isNotBlank() } ?: text
+
+// ──────────────────────────────────────────────────────────────────────
+// Shared: how lyrics are drawn, where playback is in them, and one line of them
+// ──────────────────────────────────────────────────────────────────────
+
+/** The height of a sung word's row, as a multiple of its text size. */
+internal const val LyricsWordLineHeight = 1.35f
+
+/** How far a line's text is set in from the sides of the lyrics. */
+internal val LyricsLineHorizontalPadding = 12.dp
+
+/** How the lyrics are drawn, as the user has set it - wherever they are drawn. */
+@Immutable
+internal data class LyricsStyle(
+    /** In sp. */
+    val textSize: Float,
+    /** A multiple of [textSize]. */
+    val lineSpacing: Float,
+    val lineBlur: Boolean,
+    val bounceFactor: Float,
+    val glowFactor: Float,
+    val fillTransitionWidth: Float,
+    val lrcBounceEnabled: Boolean,
+    val romanization: LyricsRomanizationPreferences,
+    val showsRomanizationOnly: Boolean,
+)
+
+@Composable
+internal fun rememberLyricsStyle(lyricsViewModel: LyricsViewModel): LyricsStyle {
+    val textSize by lyricsViewModel.lyricsTextSize.collectAsStateWithLifecycle()
+    val lineSpacing by lyricsViewModel.lyricsLineSpacing.collectAsStateWithLifecycle()
+    val lineBlur by lyricsViewModel.lyricsLineBlur.collectAsStateWithLifecycle()
+    val bounceFactor by lyricsViewModel.bounceFactor.collectAsStateWithLifecycle()
+    val glowFactor by lyricsViewModel.glowFactor.collectAsStateWithLifecycle()
+    val fillTransitionWidth by lyricsViewModel.fillTransitionWidth.collectAsStateWithLifecycle()
+    val lrcBounceEnabled by lyricsViewModel.lrcBounceEnabled.collectAsStateWithLifecycle()
+    val romanizeArabic by lyricsViewModel.romanizeArabic.collectAsStateWithLifecycle()
+    val romanizeChinese by lyricsViewModel.romanizeChinese.collectAsStateWithLifecycle()
+    val romanizeHindi by lyricsViewModel.romanizeHindi.collectAsStateWithLifecycle()
+    val romanizeJapanese by lyricsViewModel.romanizeJapanese.collectAsStateWithLifecycle()
+    val romanizeKorean by lyricsViewModel.romanizeKorean.collectAsStateWithLifecycle()
+    val romanizeOtherLanguages by lyricsViewModel.romanizeOtherLanguages.collectAsStateWithLifecycle()
+    val showsRomanizationOnly by lyricsViewModel.showsRomanizationOnly.collectAsStateWithLifecycle()
+    val romanization =
+        remember(
+            romanizeArabic,
+            romanizeJapanese,
+            romanizeKorean,
+            romanizeChinese,
+            romanizeHindi,
+            romanizeOtherLanguages,
+        ) {
+            LyricsRomanizationPreferences(
+                romanizeArabic = romanizeArabic,
+                romanizeJapanese = romanizeJapanese,
+                romanizeKorean = romanizeKorean,
+                romanizeChinese = romanizeChinese,
+                romanizeHindi = romanizeHindi,
+                romanizeOther = romanizeOtherLanguages,
+            )
+        }
+    return LyricsStyle(
+        textSize = textSize,
+        lineSpacing = lineSpacing,
+        lineBlur = lineBlur,
+        bounceFactor = bounceFactor,
+        glowFactor = glowFactor,
+        fillTransitionWidth = fillTransitionWidth,
+        lrcBounceEnabled = lrcBounceEnabled,
+        romanization = romanization,
+        showsRomanizationOnly = showsRomanizationOnly,
+    )
+}
+
+/**
+ * The direction the lyrics read in: the one most of their lines read in as shown - a line shown by its romanization
+ * alone reading as Latin - and the app's where none has one. It places what has no direction of its own: the
+ * instrumental break's note, and a line of numbers or dots.
+ */
+@Composable
+internal fun rememberLyricsDirection(
+    entries: List<LyricsEntry>,
+    style: LyricsStyle,
+): LayoutDirection {
+    val appLayoutDirection = LocalLayoutDirection.current
+    return remember(entries, style.romanization, style.showsRomanizationOnly, appLayoutDirection) {
+        val lineDirections =
+            entries.mapNotNull { entry ->
+                val isShownRomanized =
+                    style.showsRomanizationOnly && style.romanization.isEnabled &&
+                        (
+                            providedRomanizedTextForEntry(entry, style.romanization) != null ||
+                                shouldRomanizeLyricsLine(entry.text, style.romanization)
+                        )
+                if (isShownRomanized) LayoutDirection.Ltr else readingDirectionOf(entry.sungText())
+            }
+        val rtlCount = lineDirections.count { it == LayoutDirection.Rtl }
+        val ltrCount = lineDirections.size - rtlCount
+        when {
+            rtlCount > ltrCount -> LayoutDirection.Rtl
+            ltrCount > rtlCount -> LayoutDirection.Ltr
+            else -> appLayoutDirection
+        }
+    }
+}
+
+/** Where playback is in a track's synced lyrics, followed as it plays. Read where it is drawn. */
+@Stable
+internal class LyricsPlayhead(
+    lyricsPositionMs: Long,
+    highlightPositionMs: Long,
+    lineIndex: Int,
+) {
+    /** Where the lyrics are: see [LyricsTimeline.lyricsPositionMs]. */
+    var lyricsPositionMs by mutableLongStateOf(lyricsPositionMs)
+
+    /** Where their highlight is drawn: see [LyricsTimeline.highlightPositionMs]. */
+    var highlightPositionMs by mutableLongStateOf(highlightPositionMs)
+
+    /** The line playing. */
+    var lineIndex by mutableIntStateOf(lineIndex)
+}
+
+/** Follows playback through [timeline] - read at once, so the lyrics open on the line playing. */
+@Composable
+internal fun rememberLyricsPlayhead(
+    timeline: LyricsTimeline?,
+    positionMsProvider: () -> Long,
+    sliderPositionProvider: () -> Long?,
+    lyricsSyncOffset: Int,
+): LyricsPlayhead {
+    val playhead =
+        remember(timeline) {
+            if (timeline != null && timeline.isSynced && timeline.entries.isNotEmpty()) {
+                val lyricsPositionMs = timeline.lyricsPositionMs(sliderPositionProvider() ?: positionMsProvider(), lyricsSyncOffset)
+                LyricsPlayhead(lyricsPositionMs, timeline.highlightPositionMs(lyricsPositionMs), timeline.lineIndexAt(lyricsPositionMs))
+            } else {
+                LyricsPlayhead(0L, 0L, 0)
+            }
+        }
+    LaunchedEffect(timeline, lyricsSyncOffset) {
+        if (timeline == null || !timeline.isSynced || timeline.entries.isEmpty()) return@LaunchedEffect
+        val pollIntervalMs = if (timeline.isWordSynced) 16L else 50L
+        while (isActive) {
+            val lyricsPositionMs = timeline.lyricsPositionMs(sliderPositionProvider() ?: positionMsProvider(), lyricsSyncOffset)
+            playhead.lyricsPositionMs = lyricsPositionMs
+            playhead.highlightPositionMs = timeline.highlightPositionMs(lyricsPositionMs)
+            playhead.lineIndex = timeline.lineIndexAt(lyricsPositionMs)
+            delay(pollIntervalMs)
+        }
+    }
+    return playhead
+}
+
+/**
+ * Keeps [lineIndex] [anchorOffsetPx] - for the list's height - below the top of [listState]'s list while
+ * [isFollowing]: placed there the first time, which is where the lyrics open, then scrolled to as each line comes -
+ * from far away, snapped close first.
+ */
+@Composable
+internal fun FollowLine(
+    listState: LazyListState,
+    timeline: LyricsTimeline,
+    lineIndex: Int,
+    isFollowing: Boolean,
+    anchorOffsetPx: (viewportHeight: Int) -> Int,
+) {
+    var hasReachedLine by remember(timeline) { mutableStateOf(false) }
+    LaunchedEffect(lineIndex, isFollowing) {
+        if (!isFollowing) return@LaunchedEffect
+
+        // Measured before the first scroll, which is where the lyrics open - placed there, not scrolled to.
+        val viewportHeight = snapshotFlow { listState.layoutInfo.viewportSize.height }.first { it > 0 }
+        val targetOffset = anchorOffsetPx(viewportHeight)
+        if (!hasReachedLine) {
+            listState.scrollToItem(lineIndex, -targetOffset)
+            hasReachedLine = true
+            return@LaunchedEffect
+        }
+
+        val distance = abs(lineIndex - (listState.firstVisibleItemIndex))
+        if (distance > 15) {
+            // Far jump — snap first, then settle
+            listState.scrollToItem(
+                (lineIndex - 2).coerceAtLeast(0),
+                0,
+            )
+        }
+        listState.animateScrollToItem(
+            index = lineIndex,
+            scrollOffset = -targetOffset,
+        )
+    }
+}
+
+/** What the lazy list reuses a line's composition for: lines drawn alike. */
+internal fun LyricsEntry.lyricsContentType(isSynced: Boolean): String =
+    when {
+        this == HEAD_LYRICS_ENTRY -> "head"
+        isInstrumental -> "instrumental"
+        words != null && isSynced -> "wordSynced"
+        else -> "lineSynced"
+    }
+
+/** How the lines around the one playing are shown. */
+internal enum class NeighbourLines {
+    /** Fainter and more blurred the farther they are from it - while the lyrics follow playback. */
+    Receding,
+
+    /** Clearer, and not blurred - while the user scrolls through them. */
+    Browsed,
+
+    /** Not at all: the line playing alone - plain lyrics, their first - the others seen only fading as they pass. */
+    Hidden,
+}
+
+/**
+ * The [index]th line of [timeline] - a sung line, or an instrumental break's note - lit, faded, blurred and scaled
+ * by how far it is from the line playing at [playhead]. [interaction] is what touching it does, over how it looks.
+ *
+ * [isSingleLine] keeps it to one row: what does not fit is cut short with an ellipsis, and what would take a row of
+ * its own - its romanization above it, its background vocals beneath - is left out.
+ */
+@Composable
+internal fun LyricsLine(
+    index: Int,
+    item: LyricsEntry,
+    timeline: LyricsTimeline,
+    playhead: LyricsPlayhead,
+    style: LyricsStyle,
+    lyricsDirection: LayoutDirection,
+    textColor: Color,
+    neighbours: NeighbourLines,
+    isSelected: Boolean,
+    isSingleLine: Boolean,
+    interaction: Modifier = Modifier,
+) {
+    val inactiveAlpha = 0.35f
+    val isSynced = timeline.isSynced
+    val entriesWithWords = timeline.entries
+    val currentLineIndex = playhead.lineIndex
+    val playbackPositionMs = playhead.lyricsPositionMs
+    val isManualScrolling = neighbours == NeighbourLines.Browsed
+    val isShown = neighbours != NeighbourLines.Hidden || index == (if (isSynced) currentLineIndex else 0)
+    val lyricsTextSize = style.textSize
+    val lyricsLineSpacing = style.lineSpacing
+    val lyricsLineBlur = style.lineBlur
+
+    // ── Instrumental break icon ──
+    if (item.isInstrumental && isSynced) {
+        val startTimeMs = item.time
+        val endTimeMs = item.time + item.durationMs
+        val isActive = playbackPositionMs in startTimeMs until endTimeMs
+        val distanceFromActive = abs(index - currentLineIndex)
+        val instrAlpha =
+            when {
+                !isShown -> {
+                    0f
+                }
+
+                isActive -> {
+                    1f
+                }
+
+                isManualScrolling -> {
+                    when (distanceFromActive) {
+                        1 -> 0.72f
+                        2 -> 0.56f
+                        3 -> 0.40f
+                        else -> 0.28f
+                    }
+                }
+
+                distanceFromActive == 1 -> {
+                    0.52f
+                }
+
+                distanceFromActive == 2 -> {
+                    0.30f
+                }
+
+                distanceFromActive == 3 -> {
+                    0.18f
+                }
+
+                else -> {
+                    inactiveAlpha
+                }
+            }
+        val animatedInstrAlpha by animateFloatAsState(
+            targetValue = instrAlpha,
+            animationSpec =
+                tween(
+                    durationMillis = if (isActive) 330 else 500,
+                    easing = FastOutSlowInEasing,
+                ),
+            label = "v2InstrumentalAlpha",
+        )
+        val animatedInstrScale by animateFloatAsState(
+            targetValue = if (isActive) 1f else 0.95f,
+            animationSpec =
+                tween(
+                    durationMillis = 166,
+                    easing = FastOutSlowInEasing,
+                ),
+            label = "v2InstrumentalScale",
+        )
+        val targetInstrBlur =
+            when {
+                isActive || isManualScrolling -> 0f
+                distanceFromActive == 1 -> 2f
+                distanceFromActive == 2 -> 5f
+                else -> 12f
+            }
+        val animatedInstrBlur by animateFloatAsState(
+            targetValue = targetInstrBlur,
+            animationSpec =
+                tween(
+                    durationMillis = 300,
+                    easing = FastOutSlowInEasing,
+                ),
+            label = "v2InstrumentalBlur",
+        )
+        // Laid out in the lyrics' direction, so the note stands where their lines start.
+        CompositionLocalProvider(LocalLayoutDirection provides lyricsDirection) {
+            Box(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = LyricsLineHorizontalPadding,
+                            end = LyricsLineHorizontalPadding,
+                            top =
+                                if (index == 0 || (index == 1 && entriesWithWords[0] == HEAD_LYRICS_ENTRY)) {
+                                    0.dp
+                                } else {
+                                    (lyricsLineSpacing * 8).dp
+                                },
+                            bottom = (lyricsLineSpacing * 8).dp,
+                        ).then(
+                            if (lyricsLineBlur) {
+                                Modifier.blur(
+                                    radiusX = animatedInstrBlur.dp,
+                                    radiusY = animatedInstrBlur.dp,
+                                    edgeTreatment = BlurredEdgeTreatment.Unbounded,
+                                )
+                            } else {
+                                Modifier
+                            },
+                        ).graphicsLayer {
+                            scaleX = animatedInstrScale
+                            scaleY = animatedInstrScale
+                            alpha = animatedInstrAlpha
+                        }.then(interaction),
+            ) {
+                InstrumentalBreakItem(
+                    durationMs = item.durationMs,
+                    currentPositionMs = playbackPositionMs,
+                    startTimeMs = startTimeMs,
+                    textColor = textColor,
+                    inactiveAlpha = inactiveAlpha,
+                    // On one row, the note is as tall as the row.
+                    noteSize =
+                        if (isSingleLine) {
+                            with(LocalDensity.current) { (lyricsTextSize * lyricsLineSpacing).sp.toDp() }
+                        } else {
+                            48.dp
+                        },
+                )
+            }
+        }
+        return
+    }
+
+    // ── Agent-based positioning ──
+    // v1 or null -> Start, v2 -> End, others -> Center
+    val textAlign =
+        when (item.agent?.lowercase()) {
+            "v1", null -> TextAlign.Start
+            "v2" -> TextAlign.End
+            else -> TextAlign.Center
+        }
+    val horizontalAlignment =
+        when (item.agent?.lowercase()) {
+            "v1", null -> Alignment.Start
+            "v2" -> Alignment.End
+            else -> Alignment.CenterHorizontally
+        }
+
+    val isActive = isSynced && index == currentLineIndex
+    val isPast = isSynced && index < currentLineIndex
+
+    // Distance-based alpha for non-active lines
+    val distanceFromActive = if (isSynced) abs(index - currentLineIndex) else 0
+    val lineAlpha =
+        when {
+            !isShown -> {
+                0f
+            }
+
+            !isSynced -> {
+                0.92f
+            }
+
+            isActive -> {
+                1f
+            }
+
+            isManualScrolling -> {
+                when (distanceFromActive) {
+                    1 -> 0.72f
+                    2 -> 0.56f
+                    3 -> 0.40f
+                    else -> 0.28f
+                }
+            }
+
+            distanceFromActive == 1 -> {
+                0.52f
+            }
+
+            distanceFromActive == 2 -> {
+                0.30f
+            }
+
+            distanceFromActive == 3 -> {
+                0.18f
+            }
+
+            else -> {
+                0.10f
+            }
+        }
+    val targetBlur =
+        when {
+            !isSynced || isActive || isSelected || isManualScrolling -> 0f
+            distanceFromActive == 1 -> 2f
+            distanceFromActive == 2 -> 5f
+            else -> 12f
+        }
+    val animatedBlur by animateFloatAsState(
+        targetValue = targetBlur,
+        animationSpec =
+            tween(
+                durationMillis = 300,
+                easing = FastOutSlowInEasing,
+            ),
+        label = "v2LyricBlur",
+    )
+    val animatedLineScale by animateFloatAsState(
+        targetValue = if (isActive) 1f else 0.95f,
+        animationSpec =
+            tween(
+                durationMillis = 166,
+                easing = FastOutSlowInEasing,
+            ),
+        label = "v2LineScale",
+    )
+    val animatedLineAlpha by animateFloatAsState(
+        targetValue = lineAlpha,
+        animationSpec =
+            tween(
+                durationMillis = if (isActive) 330 else 500,
+                easing = FastOutSlowInEasing,
+            ),
+        label = "v2LineAlpha",
+    )
+    // Background vocal detection
+    val isAllBackground = item.words?.all { it.isBackground || it.text.isBlank() } == true
+
+    val romanizedText =
+        if (style.romanization.isEnabled) {
+            val value by item.romanizedTextFlow.collectAsStateWithLifecycle()
+            value
+        } else {
+            null
+        }
+    // Shown by its romanization alone, that is the line - read, laid out and sung as it is.
+    val shownRomanization = romanizedText.takeIf { style.showsRomanizationOnly }
+    val shownText = remember(item, shownRomanization) { shownRomanization ?: item.sungText() }
+    // A line reads in its own direction; one with none, in the lyrics'.
+    val lineLayoutDirection =
+        remember(shownText, lyricsDirection) { readingDirectionOf(shownText) ?: lyricsDirection }
+    val lineIsRtl = lineLayoutDirection == LayoutDirection.Rtl
+    // A line grows from where it is placed - its start, its end, or its centre - whichever side that is.
+    val lineTransformOrigin =
+        remember(item.agent, lineIsRtl) {
+            val startPivot = if (lineIsRtl) 1f else 0f
+            when (item.agent?.lowercase()) {
+                "v2" -> TransformOrigin(1f - startPivot, 0.5f)
+                "v1", null -> TransformOrigin(startPivot, 0.5f)
+                else -> TransformOrigin(0.5f, 0.5f)
+            }
+        }
+
+    CompositionLocalProvider(LocalLayoutDirection provides lineLayoutDirection) {
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .background(
+                        color =
+                            if (isSelected) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                            } else {
+                                Color.Transparent
+                            },
+                        shape = roundedShape(8.dp),
+                    ).padding(
+                        start = if (isAllBackground) LyricsLineHorizontalPadding * 2 else LyricsLineHorizontalPadding,
+                        end = LyricsLineHorizontalPadding,
+                        top =
+                            if (index == 0 ||
+                                (index == 1 && entriesWithWords[0] == HEAD_LYRICS_ENTRY)
+                            ) {
+                                0.dp
+                            } else {
+                                (lyricsLineSpacing * 8).dp
+                            },
+                        bottom = (lyricsLineSpacing * 8).dp,
+                    ).then(
+                        if (lyricsLineBlur) {
+                            Modifier.blur(
+                                radiusX = animatedBlur.dp,
+                                radiusY = animatedBlur.dp,
+                                edgeTreatment = BlurredEdgeTreatment.Unbounded,
+                            )
+                        } else {
+                            Modifier
+                        },
+                    ).graphicsLayer {
+                        scaleX = animatedLineScale
+                        scaleY = animatedLineScale
+                        alpha = animatedLineAlpha
+                        transformOrigin = lineTransformOrigin
+                    }.then(interaction),
+            horizontalAlignment = horizontalAlignment,
+        ) {
+            if (romanizedText != null && shownRomanization == null && !isSingleLine) {
+                val supplementaryBaseTextStyle = MaterialTheme.typography.bodyMedium
+                val supplementaryTextStyle =
+                    remember(supplementaryBaseTextStyle, lyricsTextSize, isAllBackground) {
+                        supplementaryBaseTextStyle.copy(
+                            fontSize = (lyricsTextSize * 0.55f).sp,
+                            lineHeight = (lyricsTextSize * 0.75f).sp,
+                            fontWeight = FontWeight.Normal,
+                            fontStyle = if (isAllBackground) FontStyle.Italic else FontStyle.Normal,
+                        )
+                    }
+                Text(
+                    text = romanizedText,
+                    style = supplementaryTextStyle,
+                    color = textColor.copy(alpha = if (isActive) 0.76f else 0.42f),
+                    textAlign = textAlign,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = (lyricsTextSize * 0.18f).dp),
+                )
+            }
+
+            val words = item.words.takeIf { shownRomanization == null }
+            if (words != null && isSynced) {
+                LyricsLineV2(
+                    words = words,
+                    isActive = isActive,
+                    isPast = isPast,
+                    currentPositionMs = playhead.highlightPositionMs,
+                    textColor = textColor,
+                    inactiveAlpha = inactiveAlpha,
+                    baseFontSize = lyricsTextSize,
+                    isLineAllBackground = isAllBackground,
+                    textAlign = textAlign,
+                    isRtl = lineIsRtl,
+                    bounceFactor = style.bounceFactor,
+                    glowFactor = style.glowFactor,
+                    fillTransitionWidth = style.fillTransitionWidth,
+                    isSingleLine = isSingleLine,
+                )
+            } else if (isSynced) {
+                // Its words' timings are the original's, so a line shown romanized is sung line by line.
+                LyricsLineLrcBounce(
+                    text = shownRomanization ?: item.text,
+                    isActive = isActive,
+                    textColor = textColor.copy(alpha = if (isActive) 1f else 0.52f),
+                    fontSize = lyricsTextSize,
+                    lineSpacing = lyricsLineSpacing,
+                    isAllBackground = isAllBackground,
+                    textAlign = textAlign,
+                    bounceFactor = if (style.lrcBounceEnabled) style.bounceFactor else 0f,
+                    isSingleLine = isSingleLine,
+                )
+            } else {
+                Text(
+                    text = shownRomanization ?: item.text,
+                    style =
+                        MaterialTheme.typography.headlineMedium.copy(
+                            fontSize = if (isAllBackground) (lyricsTextSize * 0.82f).sp else lyricsTextSize.sp,
+                            fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.SemiBold,
+                            fontStyle = if (isAllBackground) FontStyle.Italic else FontStyle.Normal,
+                            lineHeight = (lyricsTextSize * lyricsLineSpacing).sp,
+                        ),
+                    color = textColor.copy(alpha = if (isActive) 1f else 0.52f),
+                    textAlign = textAlign,
+                    maxLines = if (isSingleLine) 1 else Int.MAX_VALUE,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+/** Looks for [track]'s missing lyrics on the web again - once Music may change its file. */
+@Composable
+internal fun FindLyricsButton(
+    track: Track,
+    lyricsViewModel: LyricsViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val requestFileChange = rememberFileChangeRequest(onGranted = { lyricsViewModel.findLyrics(track) })
+    FilledTonalButton(
+        onClick = { requestFileChange(listOf(track)) },
+        shapes = buttonPressShapes(),
+        modifier = modifier,
+    ) {
+        Text(
+            text = stringResource(R.string.player_lyrics_search),
+            style = MaterialTheme.typography.labelLarge,
+        )
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Main Composable
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Synced lyrics with a liquid word fill, glow and bounce - ArchiveTune's `LyricsV2`.
+ *
+ * [timeline] is null while the track's file is being read, and has no lines where it holds none - [isFindingLyrics]
+ * while they are being looked for on the web, to show the moment they are written into the file; otherwise offering
+ * to look for them again.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+internal fun LyricsV2(
+    track: Track,
+    timeline: LyricsTimeline?,
+    isFindingLyrics: Boolean,
+    positionMsProvider: () -> Long,
+    sliderPositionProvider: () -> Long?,
+    lyricsSyncOffset: Int,
+    onSeek: (Long) -> Unit,
+    textColor: Color,
+    lyricsViewModel: LyricsViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // ── Preferences ──
+    val lyricsClick by lyricsViewModel.lyricsClick.collectAsStateWithLifecycle()
+    val lyricsScroll by lyricsViewModel.lyricsScroll.collectAsStateWithLifecycle()
+    val style = rememberLyricsStyle(lyricsViewModel)
+
+    // ── Selection mode state ──
+    var isSelectionModeActive by rememberSaveable { mutableStateOf(false) }
+    val selectedIndices = remember { mutableStateListOf<Int>() }
+
+    val isSynced = timeline?.isSynced == true
+    val entriesWithWords = timeline?.entries.orEmpty()
+
+    val lyricsDirection = rememberLyricsDirection(entriesWithWords, style)
+
+    // ── Playback position tracking ──
+    val playhead = rememberLyricsPlayhead(timeline, positionMsProvider, sliderPositionProvider, lyricsSyncOffset)
+
+    // ── Scroll State ──
+    val listState = rememberLazyListState()
+    var isManualScrolling by remember { mutableStateOf(false) }
+    var lastManualScrollTime by remember { mutableLongStateOf(0L) }
+
+    // Detect manual scrolling
+    val nestedScrollConnection =
+        remember {
+            object : NestedScrollConnection {
+                override fun onPreScroll(
+                    available: Offset,
+                    source: NestedScrollSource,
+                ): Offset {
+                    if (!isSelectionModeActive && source == NestedScrollSource.UserInput) {
+                        isManualScrolling = true
+                        lastManualScrollTime = System.currentTimeMillis()
+                    }
+                    return Offset.Zero
+                }
+            }
+        }
+
+    // Resume auto-scroll after timeout
+    LaunchedEffect(isManualScrolling, lastManualScrollTime) {
+        if (isManualScrolling) {
+            delay(MANUAL_SCROLL_TIMEOUT_MS)
+            isManualScrolling = false
+        }
+    }
+
+    // Auto-scroll to active line, centre bias at 35% from the top
+    if (timeline != null) {
+        FollowLine(
+            listState = listState,
+            timeline = timeline,
+            lineIndex = playhead.lineIndex,
+            isFollowing = lyricsScroll && !isManualScrolling && isSynced && playhead.lineIndex in entriesWithWords.indices,
+            anchorOffsetPx = { viewportHeight -> (viewportHeight * 0.35f).toInt() },
+        )
+    }
+
+    BackHandler(enabled = isSelectionModeActive) {
+        isSelectionModeActive = false
+        selectedIndices.clear()
+    }
+
+    fun toastMaxSelection() = context.toast(context.getString(R.string.player_max_selection_limit, MAX_SELECTION_LIMIT))
+
+    // ── Keep screen alive ──
+    val activity = context as? Activity
+    DisposableEffect(Unit) {
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // ── Render ──
+    BoxWithConstraints(
+        contentAlignment = Alignment.TopCenter,
+        modifier =
+            modifier
+                .fillMaxSize()
+                .padding(bottom = 12.dp),
+    ) {
+        if (timeline == null) {
+            ShimmerHost {
+                repeat(6) {
+                    TextPlaceholder()
+                }
+            }
+            return@BoxWithConstraints
+        }
+
+        if (entriesWithWords.isEmpty()) {
+            // The search and its end cross-fade in place: found lyrics replace the whole pane once written.
+            Crossfade(targetState = isFindingLyrics, modifier = Modifier.fillMaxSize(), label = "lyricsFinding") { isFinding ->
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (isFinding) {
+                        CircularWavyProgressIndicator(
+                            color = textColor,
+                            trackColor = textColor.copy(alpha = 0.2f),
+                            modifier = Modifier.size(48.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.player_lyrics_finding),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = textColor,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 20.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.player_lyrics_finding_body),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = textColor.copy(alpha = 0.6f),
+                            textAlign = TextAlign.Center,
+                        )
+                    } else {
+                        Text(
+                            text = stringResource(R.string.player_lyrics_not_found),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = textColor.copy(alpha = 0.6f),
+                            textAlign = TextAlign.Center,
+                        )
+                        FindLyricsButton(
+                            track = track,
+                            lyricsViewModel = lyricsViewModel,
+                            modifier = Modifier.padding(top = 16.dp),
+                        )
+                    }
+                }
+            }
+            return@BoxWithConstraints
+        }
+
+        LazyColumn(
+            state = listState,
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .nestedScroll(nestedScrollConnection)
+                    .smoothFadingEdge(vertical = 80.dp)
+                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            itemsIndexed(
+                items = entriesWithWords,
+                key = { index, entry -> "${index}_${entry.time}" },
+                contentType = { _, entry -> entry.lyricsContentType(isSynced) },
+            ) { index, item ->
+                if (item == HEAD_LYRICS_ENTRY) {
+                    Spacer(modifier = Modifier.height(120.dp))
+                    return@itemsIndexed
+                }
+
+                val isSelected = selectedIndices.contains(index)
+                LyricsLine(
+                    index = index,
+                    item = item,
+                    timeline = timeline,
+                    playhead = playhead,
+                    style = style,
+                    lyricsDirection = lyricsDirection,
+                    textColor = textColor,
+                    neighbours = if (isManualScrolling) NeighbourLines.Browsed else NeighbourLines.Receding,
+                    isSelected = isSelectionModeActive && isSelected,
+                    isSingleLine = false,
+                    interaction =
+                        if (item.isInstrumental && isSynced) {
+                            if (lyricsClick && item.time > 0) {
+                                Modifier.clickable { onSeek(item.time) }
+                            } else {
+                                Modifier
+                            }
+                        } else {
+                            Modifier.combinedClickable(
+                                onClick = {
+                                    if (isSelectionModeActive) {
+                                        if (isSelected) {
+                                            selectedIndices.remove(index)
+                                            if (selectedIndices.isEmpty()) {
+                                                isSelectionModeActive = false
+                                            }
+                                        } else {
+                                            if (selectedIndices.size < MAX_SELECTION_LIMIT) {
+                                                selectedIndices.add(index)
+                                            } else {
+                                                toastMaxSelection()
+                                            }
+                                        }
+                                    } else if (lyricsClick && isSynced && item.time > 0) {
+                                        onSeek(item.time)
+                                    }
+                                },
+                                onLongClick = {
+                                    if (!isSelectionModeActive) {
+                                        isSelectionModeActive = true
+                                        selectedIndices.add(index)
+                                    } else if (!isSelected && selectedIndices.size < MAX_SELECTION_LIMIT) {
+                                        selectedIndices.add(index)
+                                    } else if (!isSelected) {
+                                        toastMaxSelection()
+                                    }
+                                },
+                            )
+                        },
+                )
+            }
+
+            // Bottom spacer for overscroll
+            item {
+                Spacer(modifier = Modifier.height(300.dp))
+            }
+        }
+
+        // ── Resume auto-scroll button ──
+        if (isManualScrolling && isSynced) {
+            FilledTonalButton(
+                onClick = {
+                    isManualScrolling = false
+                    scope.launch {
+                        val viewportHeight = listState.layoutInfo.viewportSize.height
+                        listState.animateScrollToItem(
+                            index = playhead.lineIndex,
+                            scrollOffset = -(viewportHeight * 0.35f).toInt(),
+                        )
+                    }
+                },
+                modifier =
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 16.dp),
+                shapes = buttonPressShapes(),
+            ) {
+                Text(
+                    text = stringResource(R.string.player_lyrics_resume),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+        }
+        if (isSelectionModeActive) {
+            // In the lyrics' own colour, whatever they are drawn over; what is drawn on it, light or dark against it.
+            val onTextColor = if (textColor.luminance() > 0.5f) Color.Black else Color.White
+            Box(
+                modifier =
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier =
+                            Modifier
+                                .size(48.dp)
+                                .background(
+                                    color = textColor.copy(alpha = 0.15f),
+                                    shape = pillShape,
+                                ).clickable {
+                                    isSelectionModeActive = false
+                                    selectedIndices.clear()
+                                },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = MusicIcons.Close,
+                            contentDescription = stringResource(R.string.player_close),
+                            tint = textColor,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+
+                    Row(
+                        modifier =
+                            Modifier
+                                .background(
+                                    color =
+                                        if (selectedIndices.isNotEmpty()) {
+                                            textColor.copy(alpha = 0.9f)
+                                        } else {
+                                            textColor.copy(alpha = 0.5f)
+                                        },
+                                    shape = roundedShape(24.dp),
+                                ).clickable(enabled = selectedIndices.isNotEmpty()) {
+                                    val selectedLyricsText =
+                                        selectedIndices
+                                            .sorted()
+                                            .mapNotNull { entriesWithWords.getOrNull(it)?.text }
+                                            .joinToString("\n")
+
+                                    if (selectedLyricsText.isNotBlank()) {
+                                        context.shareLyricsAsText(selectedLyricsText, track)
+                                    }
+                                    isSelectionModeActive = false
+                                    selectedIndices.clear()
+                                }.padding(horizontal = 24.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = MusicIcons.Share,
+                            contentDescription = null,
+                            tint = onTextColor,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.player_share),
+                            color = onTextColor,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Offers the selected lines, quoted and signed with the track, to another app - ArchiveTune's `shareLyricsAsText`. */
+private fun Context.shareLyricsAsText(
+    lyricsText: String,
+    track: Track,
+) {
+    val shareBody =
+        buildString {
+            append("\"")
+            append(lyricsText)
+            append("\"\n\n")
+            append(track.title)
+            append(" - ")
+            append(track.artist)
+        }
+
+    val shareIntent =
+        Intent().apply {
+            action = Intent.ACTION_SEND
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, shareBody)
+        }
+    startActivity(Intent.createChooser(shareIntent, getString(R.string.player_share_lyrics)))
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Line-level composable: renders words with fluid fill animation
+// ──────────────────────────────────────────────────────────────────────
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LyricsLineV2(
+    words: List<WordTimestamp>,
+    isActive: Boolean,
+    isPast: Boolean,
+    currentPositionMs: Long,
+    textColor: Color,
+    inactiveAlpha: Float,
+    baseFontSize: Float,
+    isLineAllBackground: Boolean,
+    textAlign: TextAlign,
+    isRtl: Boolean,
+    bounceFactor: Float,
+    glowFactor: Float,
+    fillTransitionWidth: Float,
+    isSingleLine: Boolean,
+) {
+    // Split words into main and background
+    val mainWords = words.filter { !it.isBackground }
+    val bgWords = words.filter { it.isBackground }
+    val fontWeight = if (isActive || isPast) FontWeight.ExtraBold else FontWeight.SemiBold
+    // Cut short, a row ends as its words begin: unfilled.
+    val ellipsis: @Composable (fontSize: Float) -> Unit = { fontSize ->
+        Text(
+            text = Ellipsis,
+            style =
+                MaterialTheme.typography.headlineMedium.copy(
+                    fontSize = fontSize.sp,
+                    fontWeight = fontWeight,
+                    lineHeight = (fontSize * LyricsWordLineHeight).sp,
+                ),
+            color = textColor.copy(alpha = inactiveAlpha),
+        )
+    }
+
+    // 1. Render main words First (if any)
+    if (mainWords.isNotEmpty()) {
+        val mainFontSize = if (isLineAllBackground) baseFontSize * 0.82f else baseFontSize
+        LyricsWordRow(
+            isSingleLine = isSingleLine,
+            textAlign = textAlign,
+            ellipsis = { ellipsis(mainFontSize) },
+        ) {
+            mainWords.forEach { word ->
+                if (word.text == " ") {
+                    Text(
+                        text = " ",
+                        style =
+                            MaterialTheme.typography.headlineMedium.copy(
+                                fontSize = if (isLineAllBackground) (baseFontSize * 0.82f).sp else baseFontSize.sp,
+                            ),
+                        color = Color.Transparent,
+                    )
+                    return@forEach
+                }
+                if (word.text == "\n") {
+                    Spacer(modifier = Modifier.fillMaxWidth())
+                    return@forEach
+                }
+
+                AnimatedWordV2(
+                    word = word,
+                    isLineActive = isActive,
+                    isLinePast = isPast,
+                    currentPositionMs = currentPositionMs,
+                    textColor = textColor,
+                    inactiveAlpha = inactiveAlpha,
+                    fontSize = if (isLineAllBackground) baseFontSize * 0.82f else baseFontSize,
+                    isBackground = isLineAllBackground,
+                    isRtl = isRtl,
+                    bounceFactor = bounceFactor,
+                    glowFactor = glowFactor,
+                    fillTransitionWidth = fillTransitionWidth,
+                )
+            }
+        }
+    }
+
+    // 2. Render background words explicitly on a NEW line, noticeably smaller - on one row, only where they are all
+    if (bgWords.isNotEmpty() && !(isSingleLine && mainWords.isNotEmpty())) {
+        if (mainWords.isNotEmpty()) Spacer(modifier = Modifier.height(4.dp))
+
+        LyricsWordRow(
+            isSingleLine = isSingleLine,
+            textAlign = textAlign,
+            ellipsis = { ellipsis(baseFontSize * 0.65f * 0.85f) },
+            modifier = Modifier.alpha(0.85f), // Slightly dimmer overall
+        ) {
+            bgWords.forEach { word ->
+                if (word.text == " ") {
+                    Text(
+                        text = " ",
+                        style =
+                            MaterialTheme.typography.headlineMedium.copy(
+                                fontSize = (baseFontSize * 0.65f).sp,
+                            ),
+                        color = Color.Transparent,
+                    )
+                    return@forEach
+                }
+
+                AnimatedWordV2(
+                    word = word,
+                    isLineActive = isActive,
+                    isLinePast = isPast,
+                    currentPositionMs = currentPositionMs,
+                    textColor = textColor,
+                    inactiveAlpha = inactiveAlpha,
+                    fontSize = baseFontSize * 0.65f, // ~65% size of main text
+                    isBackground = true, // Force dimmer styling inside AnimatedWordV2
+                    isRtl = isRtl,
+                    bounceFactor = bounceFactor,
+                    glowFactor = glowFactor,
+                    fillTransitionWidth = fillTransitionWidth,
+                )
+            }
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Word-level composable: liquid fill sweep + glow + bounce
+// ──────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun AnimatedWordV2(
+    word: WordTimestamp,
+    isLineActive: Boolean,
+    isLinePast: Boolean,
+    currentPositionMs: Long,
+    textColor: Color,
+    inactiveAlpha: Float,
+    fontSize: Float,
+    isBackground: Boolean,
+    isRtl: Boolean,
+    bounceFactor: Float,
+    glowFactor: Float,
+    fillTransitionWidth: Float,
+) {
+    val wordStartMs = (word.startTime * 1000).toLong()
+    val wordEndMs = (word.endTime * 1000).toLong()
+    val wordDuration = (wordEndMs - wordStartMs).coerceAtLeast(1L)
+
+    val isWordComplete = currentPositionMs >= wordEndMs
+    val isWordActive = currentPositionMs in wordStartMs until wordEndMs
+
+    // Perfect linear progress [0..1] that matches individual word timings
+    val progress =
+        when {
+            isWordComplete -> 1f
+            currentPositionMs <= wordStartMs -> 0f
+            else -> ((currentPositionMs - wordStartMs).toFloat() / wordDuration).coerceIn(0f, 1f)
+        }
+
+    // ── Bounce and Float animation ──
+    // Subtle scale up peaking halfway through the word. Exact timing sync!
+    val sinProgress = sin(progress * PI).toFloat()
+    val wordScale = 1f + (0.015f * bounceFactor * sinProgress)
+
+    // Float is only applied when the word is actively sung, making it pop from the line.
+    // We use animateFloatAsState so that when it finishes (and drops to 0f),
+    // it smoothly decays back into place rather than a harsh mathematical snap.
+    val targetFloat = if (isWordActive) -4f * bounceFactor * sinProgress else 0f
+    val floatOffset by animateFloatAsState(
+        targetValue = targetFloat,
+        animationSpec =
+            tween(
+                durationMillis = if (isWordActive) 50 else 350,
+                easing = FastOutSlowInEasing,
+            ),
+        label = "v2FloatOffset",
+    )
+
+    // ── Glow intensity ──
+    // "lines and words that are done animating shouldnt continue to glow"
+    // Make glow build up faster: reach max intensity at 50% progress
+    val glowProgress = (progress * 2f).coerceAtMost(1f)
+    val glowAlpha = if (isWordActive) glowProgress * 0.45f * glowFactor else 0f
+    val glowRadius = if (isWordActive) glowProgress * 12f * glowFactor else 0f
+
+    val actualFontSize = if (isBackground) fontSize * 0.85f else fontSize
+    val fontWeight = if (isLineActive || isLinePast) FontWeight.ExtraBold else FontWeight.SemiBold
+    val glowPadding = 10.dp
+
+    // ── Two-layer rendering: dim base + liquid fill overlay ──
+    Box(
+        modifier =
+            Modifier
+                .layout { measurable, constraints ->
+                    val glowPaddingPx = glowPadding.roundToPx()
+                    val looseConstraints =
+                        constraints.copy(
+                            minWidth = 0,
+                            maxWidth = constraints.maxWidth,
+                            minHeight = 0,
+                            maxHeight = Constraints.Infinity,
+                        )
+                    val placeable = measurable.measure(looseConstraints)
+
+                    val coreWidth = (placeable.width - glowPaddingPx * 2).coerceAtLeast(0)
+                    val coreHeight = (placeable.height - glowPaddingPx * 2).coerceAtLeast(0)
+
+                    layout(coreWidth, coreHeight) {
+                        placeable.place(-glowPaddingPx, -glowPaddingPx)
+                    }
+                }.graphicsLayer {
+                    clip = false
+                    translationY = floatOffset * density
+                    scaleX = wordScale
+                    scaleY = wordScale
+                },
+    ) {
+        // Layer 1: Base text (always dimmed)
+        Text(
+            text = word.text,
+            style =
+                MaterialTheme.typography.headlineMedium.copy(
+                    fontSize = actualFontSize.sp,
+                    fontWeight = fontWeight,
+                    fontStyle = FontStyle.Normal,
+                    lineHeight = (actualFontSize * LyricsWordLineHeight).sp,
+                ),
+            color = textColor.copy(alpha = if (isBackground) inactiveAlpha * 0.7f else inactiveAlpha),
+            modifier = Modifier.padding(glowPadding),
+        )
+
+        // Layer 2: Filled overlay with liquid sweep mask + glow
+        if (isWordComplete || isWordActive || isLinePast) {
+            Text(
+                text = word.text,
+                style =
+                    MaterialTheme.typography.headlineMedium.copy(
+                        fontSize = actualFontSize.sp,
+                        fontWeight = fontWeight,
+                        fontStyle = FontStyle.Normal,
+                        lineHeight = (actualFontSize * LyricsWordLineHeight).sp,
+                        shadow =
+                            if (glowAlpha > 0f) {
+                                Shadow(
+                                    color = textColor.copy(alpha = glowAlpha),
+                                    offset = Offset.Zero,
+                                    blurRadius = glowRadius.coerceAtLeast(1f),
+                                )
+                            } else {
+                                null
+                            },
+                    ),
+                color =
+                    textColor.copy(
+                        alpha = if (isBackground) 0.75f else 1f,
+                    ),
+                modifier =
+                    if (isWordActive) {
+                        Modifier
+                            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                            .drawWithContent {
+                                drawContent()
+                                val edgeWidth = fillTransitionWidth.dp.toPx()
+                                val center =
+                                    if (isRtl) {
+                                        size.width - ((size.width + edgeWidth * 2) * progress - edgeWidth)
+                                    } else {
+                                        (size.width + edgeWidth * 2) * progress - edgeWidth
+                                    }
+                                drawRect(
+                                    brush =
+                                        Brush.horizontalGradient(
+                                            colors =
+                                                if (isRtl) {
+                                                    listOf(Color.Transparent, Color.Black)
+                                                } else {
+                                                    listOf(Color.Black, Color.Transparent)
+                                                },
+                                            startX = center - edgeWidth,
+                                            endX = center + edgeWidth,
+                                        ),
+                                    blendMode = BlendMode.DstIn,
+                                )
+                            }.padding(glowPadding)
+                    } else {
+                        Modifier.padding(glowPadding)
+                    },
+            )
+        }
+    }
+}
+
+private const val Ellipsis = "\u2026"
+
+/**
+ * A line's words, wrapping onto as many rows as they take - or, [isSingleLine], on one: the words that fit, then
+ * [ellipsis] where any are left, the line cut at a word rather than through one. Placed as [textAlign] says.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LyricsWordRow(
+    isSingleLine: Boolean,
+    textAlign: TextAlign,
+    ellipsis: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    words: @Composable () -> Unit,
+) {
+    if (!isSingleLine) {
+        FlowRow(
+            modifier = modifier.fillMaxWidth(),
+            horizontalArrangement =
+                when (textAlign) {
+                    TextAlign.Center -> Arrangement.Center
+                    TextAlign.End -> Arrangement.End
+                    else -> Arrangement.Start
+                },
+        ) {
+            words()
+        }
+        return
+    }
+
+    val alignment =
+        when (textAlign) {
+            TextAlign.Center -> Alignment.CenterHorizontally
+            TextAlign.End -> Alignment.End
+            else -> Alignment.Start
+        }
+    Layout(
+        contents = listOf(words, ellipsis),
+        modifier = modifier.fillMaxWidth(),
+    ) { (wordMeasurables, ellipsisMeasurables), constraints ->
+        val width = constraints.maxWidth
+        // Each word at its own width, never wrapped within itself.
+        val wordConstraints = Constraints(maxHeight = constraints.maxHeight)
+        val ellipsisPlaceable = ellipsisMeasurables.single().measure(wordConstraints)
+        val placeables = mutableListOf<Placeable>()
+        var usedWidth = 0
+        var isCut = false
+        for (measurable in wordMeasurables) {
+            val placeable = measurable.measure(wordConstraints)
+            if (usedWidth + placeable.width > width) {
+                isCut = true
+                break
+            }
+            placeables += placeable
+            usedWidth += placeable.width
+        }
+        // Words that leave the ellipsis no room make way for it.
+        while (isCut && placeables.isNotEmpty() && usedWidth + ellipsisPlaceable.width > width) {
+            usedWidth -= placeables.removeAt(placeables.lastIndex).width
+        }
+        val rowWidth = usedWidth + if (isCut) ellipsisPlaceable.width else 0
+        val height = maxOf(placeables.maxOfOrNull { it.height } ?: 0, if (isCut) ellipsisPlaceable.height else 0)
+        layout(width, height) {
+            // Measured from the row's start, and placed from it whichever way the line reads.
+            var x = alignment.align(rowWidth, width, LayoutDirection.Ltr)
+            placeables.forEach { placeable ->
+                placeable.placeRelative(x, 0)
+                x += placeable.width
+            }
+            if (isCut) ellipsisPlaceable.placeRelative(x, 0)
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// LRC bounce: word-by-word spring bounce for line-synced lyrics
+// ──────────────────────────────────────────────────────────────────────
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LyricsLineLrcBounce(
+    text: String,
+    isActive: Boolean,
+    textColor: Color,
+    fontSize: Float,
+    lineSpacing: Float,
+    isAllBackground: Boolean,
+    textAlign: TextAlign,
+    bounceFactor: Float,
+    isSingleLine: Boolean,
+) {
+    val words = remember(text) { text.toLyricsWrappingUnits() }
+    val effectiveFontSize = if (isAllBackground) fontSize * 0.82f else fontSize
+    val fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.SemiBold
+    val fontStyle = if (isAllBackground) FontStyle.Italic else FontStyle.Normal
+    val scaleAnimatables = remember(words.size) { List(words.size) { Animatable(1f) } }
+    val floatAnimatables = remember(words.size) { List(words.size) { Animatable(0f) } }
+
+    LaunchedEffect(isActive) {
+        if (!isActive || bounceFactor == 0f) return@LaunchedEffect
+        words.indices.forEach { i ->
+            launch {
+                delay(i * 40L)
+                try {
+                    scaleAnimatables[i].animateTo(
+                        targetValue = 1f + 0.045f * bounceFactor,
+                        animationSpec =
+                            spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessHigh,
+                            ),
+                    )
+                    scaleAnimatables[i].animateTo(
+                        targetValue = 1f,
+                        animationSpec =
+                            spring(
+                                dampingRatio = Spring.DampingRatioLowBouncy,
+                                stiffness = Spring.StiffnessMediumLow,
+                            ),
+                    )
+                } finally {
+                    withContext(NonCancellable) { scaleAnimatables[i].snapTo(1f) }
+                }
+            }
+            launch {
+                delay(i * 40L)
+                try {
+                    floatAnimatables[i].animateTo(
+                        targetValue = -5f * bounceFactor,
+                        animationSpec =
+                            spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessHigh,
+                            ),
+                    )
+                    floatAnimatables[i].animateTo(
+                        targetValue = 0f,
+                        animationSpec =
+                            spring(
+                                dampingRatio = Spring.DampingRatioLowBouncy,
+                                stiffness = Spring.StiffnessMediumLow,
+                            ),
+                    )
+                } finally {
+                    withContext(NonCancellable) { floatAnimatables[i].snapTo(0f) }
+                }
+            }
+        }
+    }
+
+    LyricsWordRow(
+        isSingleLine = isSingleLine,
+        textAlign = textAlign,
+        ellipsis = {
+            Text(
+                text = Ellipsis,
+                style =
+                    MaterialTheme.typography.headlineMedium.copy(
+                        fontSize = effectiveFontSize.sp,
+                        fontWeight = fontWeight,
+                        fontStyle = fontStyle,
+                        lineHeight = (effectiveFontSize * lineSpacing).sp,
+                    ),
+                color = textColor,
+            )
+        },
+    ) {
+        words.forEachIndexed { i, word ->
+            LrcBouncingWord(
+                text = word,
+                scaleAnim = scaleAnimatables[i],
+                floatAnim = floatAnimatables[i],
+                color = textColor,
+                fontSize = effectiveFontSize,
+                lineSpacing = lineSpacing,
+                fontWeight = fontWeight,
+                fontStyle = fontStyle,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LrcBouncingWord(
+    text: String,
+    scaleAnim: Animatable<Float, AnimationVector1D>,
+    floatAnim: Animatable<Float, AnimationVector1D>,
+    color: Color,
+    fontSize: Float,
+    lineSpacing: Float,
+    fontWeight: FontWeight,
+    fontStyle: FontStyle,
+) {
+    Text(
+        text = text,
+        style =
+            MaterialTheme.typography.headlineMedium.copy(
+                fontSize = fontSize.sp,
+                fontWeight = fontWeight,
+                fontStyle = fontStyle,
+                lineHeight = (fontSize * lineSpacing).sp,
+            ),
+        color = color,
+        modifier =
+            Modifier.graphicsLayer {
+                scaleX = scaleAnim.value
+                scaleY = scaleAnim.value
+                translationY = floatAnim.value
+            },
+    )
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Instrumental break icon: music-note filled bottom-to-top over the gap
+// ──────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun InstrumentalBreakItem(
+    durationMs: Long,
+    currentPositionMs: Long,
+    startTimeMs: Long,
+    textColor: Color,
+    inactiveAlpha: Float,
+    noteSize: Dp,
+) {
+    val musicNotePath =
+        remember {
+            PathParser()
+                .parsePathString(
+                    "M10 21q-1.65 0-2.825-1.175T6 17t1.175-2.825T10 13q.575 0 1.063.138t.937.412V4" +
+                        "q0-.425.288-.712T13 3h4q.425 0 .713.288T18 4v2q0 .425-.288.713T17 7h-3v10" +
+                        "q0 1.65-1.175 2.825T10 21",
+                ).toPath()
+        }
+
+    val targetFillFraction =
+        when {
+            durationMs <= 0L -> {
+                0f
+            }
+
+            currentPositionMs <= startTimeMs -> {
+                0f
+            }
+
+            currentPositionMs >= startTimeMs + durationMs -> {
+                1f
+            }
+
+            else -> {
+                ((currentPositionMs - startTimeMs).toDouble() / durationMs.toDouble())
+                    .toFloat()
+                    .coerceIn(0f, 1f)
+            }
+        }
+    val fillFraction by animateFloatAsState(
+        targetValue = targetFillFraction,
+        animationSpec =
+            spring(
+                stiffness = Spring.StiffnessHigh,
+                dampingRatio = Spring.DampingRatioNoBouncy,
+            ),
+        label = "instrumentalFill",
+    )
+
+    Canvas(modifier = Modifier.size(noteSize)) {
+        val scaleX = size.width / 24f
+        val scaleY = size.height / 24f
+        val pivot = Offset.Zero
+
+        withTransform(
+            transformBlock = { scale(scaleX, scaleY, pivot) },
+        ) {
+            drawPath(path = musicNotePath, color = textColor.copy(alpha = inactiveAlpha))
+        }
+
+        if (fillFraction > 0f) {
+            val clipTop = size.height * (1f - fillFraction)
+            clipRect(
+                left = 0f,
+                top = clipTop,
+                right = size.width,
+                bottom = size.height,
+            ) {
+                withTransform(
+                    transformBlock = { scale(scaleX, scaleY, pivot) },
+                ) {
+                    drawPath(path = musicNotePath, color = textColor)
+                }
+            }
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Loading placeholder, fading edges and word wrapping
+// ──────────────────────────────────────────────────────────────────────
+
+/** Placeholder lines while the lyrics are read - ArchiveTune's `ShimmerHost`, on Music's shimmer. */
+@Composable
+internal fun ShimmerHost(content: @Composable () -> Unit) {
+    Column(
+        modifier =
+            Modifier
+                .shimmer()
+                .graphicsLayer(alpha = 0.99f)
+                .drawWithContent {
+                    drawContent()
+                    drawRect(
+                        brush = Brush.verticalGradient(listOf(Color.Black, Color.Transparent)),
+                        blendMode = BlendMode.DstIn,
+                    )
+                },
+    ) {
+        content()
+    }
+}
+
+@Composable
+internal fun TextPlaceholder() {
+    Box(
+        modifier =
+            Modifier
+                .padding(vertical = 4.dp)
+                .height(16.dp)
+                .fillMaxWidth(remember { 0.25f + Random.nextFloat() * 0.5f })
+                .clip(RoundedCornerShape(0.dp))
+                .background(MaterialTheme.colorScheme.onSurface),
+    )
+}
+
+/** Fades the first and last [vertical] of the content out - ArchiveTune's `smoothFadingEdge`. */
+internal fun Modifier.smoothFadingEdge(vertical: Dp) =
+    graphicsLayer(alpha = 0.99f)
+        .drawWithContent {
+            drawContent()
+            val topPx = vertical.toPx()
+            drawRect(
+                brush =
+                    Brush.verticalGradient(
+                        colorStops =
+                            arrayOf(
+                                0.0f to Color.Transparent,
+                                0.3f to Color.Black.copy(alpha = 0.15f),
+                                0.5f to Color.Black.copy(alpha = 0.4f),
+                                0.7f to Color.Black.copy(alpha = 0.7f),
+                                0.85f to Color.Black.copy(alpha = 0.9f),
+                                1.0f to Color.Black,
+                            ),
+                        startY = 0f,
+                        endY = topPx,
+                    ),
+                blendMode = BlendMode.DstIn,
+            )
+            val bottomPx = vertical.toPx()
+            drawRect(
+                brush =
+                    Brush.verticalGradient(
+                        colorStops =
+                            arrayOf(
+                                0.0f to Color.Black,
+                                0.15f to Color.Black.copy(alpha = 0.9f),
+                                0.3f to Color.Black.copy(alpha = 0.7f),
+                                0.5f to Color.Black.copy(alpha = 0.4f),
+                                0.7f to Color.Black.copy(alpha = 0.15f),
+                                1.0f to Color.Transparent,
+                            ),
+                        startY = size.height - bottomPx,
+                        endY = size.height,
+                    ),
+                blendMode = BlendMode.DstIn,
+            )
+        }
+
+/** Splits a line into the units it may wrap between: whole words, and single CJK characters. */
+private fun String.toLyricsWrappingUnits(): List<String> {
+    if (isEmpty()) return emptyList()
+
+    val units = mutableListOf<String>()
+    val currentWord = StringBuilder()
+    val characterIterator = BreakIterator.getCharacterInstance(Locale.ROOT)
+    characterIterator.setText(this)
+
+    fun flushCurrentWord() {
+        if (currentWord.isNotEmpty()) {
+            units += currentWord.toString()
+            currentWord.clear()
+        }
+    }
+
+    var start = characterIterator.first()
+    var end = characterIterator.next()
+    while (end != BreakIterator.DONE) {
+        val grapheme = substring(start, end)
+        val codePoint = grapheme.codePointAt(0)
+        when {
+            grapheme.all(Char::isWhitespace) -> {
+                currentWord.append(grapheme)
+                flushCurrentWord()
+            }
+
+            codePoint.isCjkCodePoint() -> {
+                flushCurrentWord()
+                units += grapheme
+            }
+
+            else -> {
+                currentWord.append(grapheme)
+            }
+        }
+        start = end
+        end = characterIterator.next()
+    }
+    flushCurrentWord()
+
+    return units
+}
+
+private fun Int.isCjkCodePoint(): Boolean =
+    when (Character.UnicodeScript.of(this)) {
+        Character.UnicodeScript.HAN,
+        Character.UnicodeScript.HANGUL,
+        Character.UnicodeScript.HIRAGANA,
+        Character.UnicodeScript.KATAKANA,
+        -> true
+
+        else -> false
+    }

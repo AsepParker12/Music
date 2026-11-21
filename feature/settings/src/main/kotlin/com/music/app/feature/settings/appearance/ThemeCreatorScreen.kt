@@ -1,0 +1,529 @@
+package com.music.app.feature.settings.appearance
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.designsystem.component.actionButton
+import com.music.app.core.designsystem.component.dialog.MusicDialog
+import com.music.app.core.designsystem.component.LocalBottomContentPadding
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.copyToClipboard
+import com.music.app.core.designsystem.component.fab.ExtendedFloatingActionButtonContent
+import com.music.app.core.designsystem.component.fab.MusicExtendedFloatingActionButtons
+import com.music.app.core.designsystem.component.fastscroll.FastScroller
+import com.music.app.core.designsystem.component.toast
+import com.music.app.core.designsystem.theme.buttonPressShapes
+import com.music.app.core.designsystem.theme.palette.ThemePalettes
+import com.music.app.core.designsystem.theme.palette.ThemeSeedPalette
+import com.music.app.core.designsystem.theme.palette.ThemeSeedPaletteCodec
+import com.music.app.core.designsystem.theme.pillShape
+import com.music.app.core.designsystem.theme.roundedShape
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.settings.R
+import com.music.app.feature.settings.appearance.palette.PalettePreview
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.music.app.core.designsystem.icon.MusicIcons
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.maxLength
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.drop
+
+/** The longest a theme's name may be. */
+private const val MaxThemeNameLength = 48
+
+/** How much of an unreadable import is shown back to the user. */
+private const val MaxImportErrorLength = 1200
+
+/** How many preset colours the editor offers to start a seed from. */
+private const val PresetSwatchCount = 18
+
+/** The four seeds a theme is built from, in the order the editor offers them. */
+private enum class SeedRole(val labelRes: Int) {
+    PRIMARY(R.string.theme_seed_primary),
+    SECONDARY(R.string.theme_seed_secondary),
+    TERTIARY(R.string.theme_seed_tertiary),
+    NEUTRAL(R.string.theme_seed_neutral),
+}
+
+private val ColorSaver = Saver<Color, Int>(save = { it.toArgb() }, restore = { Color(it) })
+
+/**
+ * A palette of one's own - ArchiveTune's `ThemeCreatorScreen`: four seed colours set by hex or by channel,
+ * previewed as they are set, applied as the palette, and exported to or imported from a JSON file
+ * ArchiveTune reads and writes too.
+ *
+ * It starts from the palette in use - a custom theme's seeds and name, or a preset's seeds.
+ */
+data object ThemeCreatorScreen : Screen {
+
+    @Composable
+    override fun Content() {
+        val context = LocalContext.current
+        val navigator = LocalNavigator.current
+        val scope = rememberCoroutineScope()
+        val viewModel: AppearanceSettingsViewModel = hiltViewModel()
+        val theme by viewModel.theme.collectAsStateWithLifecycle()
+        val storedPalette = theme.colorPalette
+
+        val storedSeeds = remember(storedPalette) { ThemePalettes.seedsOf(storedPalette) }
+        val themeNameState = rememberSaveable(storedPalette, saver = TextFieldState.Saver) {
+            TextFieldState(storedPalette?.let(ThemeSeedPaletteCodec::extractNameFromPreference).orEmpty())
+        }
+        val themeName = themeNameState.text.toString()
+        var primary by rememberSaveable(storedPalette, stateSaver = ColorSaver) { mutableStateOf(storedSeeds.primary) }
+        var secondary by rememberSaveable(storedPalette, stateSaver = ColorSaver) { mutableStateOf(storedSeeds.secondary) }
+        var tertiary by rememberSaveable(storedPalette, stateSaver = ColorSaver) { mutableStateOf(storedSeeds.tertiary) }
+        var neutral by rememberSaveable(storedPalette, stateSaver = ColorSaver) { mutableStateOf(storedSeeds.neutral) }
+        val currentPalette = ThemeSeedPalette(primary, secondary, tertiary, neutral)
+
+        var activeRole by rememberSaveable { mutableStateOf(SeedRole.PRIMARY) }
+        var importErrorText by rememberSaveable { mutableStateOf<String?>(null) }
+
+        val nameOrNull = themeName.takeIf { it.isNotBlank() }
+        fun applyTheme() {
+            viewModel.setColorPalette(ThemeSeedPaletteCodec.encodeForPreference(currentPalette, nameOrNull))
+            context.toast(R.string.theme_applied)
+        }
+
+        val exportTheme = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            val payload = ThemeSeedPaletteCodec.encodeAsJson(currentPalette, nameOrNull)
+            scope.launch {
+                val exported = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+                            ?: error("No output stream")
+                    }.isSuccess
+                }
+                context.toast(if (exported) R.string.theme_export_success else R.string.theme_export_failed)
+            }
+        }
+
+        val importTheme = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri == null) return@rememberLauncherForActivityResult
+            scope.launch {
+                val text = readThemeFile(context, uri)
+                val imported = ThemeSeedPaletteCodec.decodeFromJson(text)
+                if (imported == null) {
+                    importErrorText = text.take(MaxImportErrorLength)
+                    return@launch
+                }
+                viewModel.setColorPalette(
+                    ThemeSeedPaletteCodec.encodeForPreference(imported, ThemeSeedPaletteCodec.extractNameFromJson(text)),
+                )
+                context.toast(R.string.theme_import_success)
+            }
+        }
+
+        importErrorText?.let { errorText ->
+            val okLabel = stringResource(android.R.string.ok)
+            MusicDialog(
+                onDismissRequest = { importErrorText = null },
+                title = stringResource(R.string.theme_import_failed_title),
+                buttons = { actionButton(label = okLabel, onClick = { importErrorText = null }) },
+            ) {
+                Text(
+                    text = errorText.ifBlank { stringResource(R.string.theme_import_failed) },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            MusicTopAppBar(
+                title = stringResource(R.string.theme_creator_title),
+                onNavigateBack = navigator::back,
+                actions = listOf(
+                    TopBarAction(label = stringResource(R.string.reset), icon = MusicIcons.RestartAlt) {
+                        val default = ThemePalettes.Default.seeds
+                        primary = default.primary
+                        secondary = default.secondary
+                        tertiary = default.tertiary
+                        neutral = default.neutral
+                        themeNameState.clearText()
+                    },
+                    TopBarAction(label = stringResource(R.string.save), icon = MusicIcons.Check, onClick = ::applyTheme),
+                ),
+            )
+
+            val scrollState = rememberScrollState()
+            // Above the keyboard, so the field it opens for is scrolled into view rather than the window slid.
+            FastScroller(scrollState, Modifier.fillMaxSize().imePadding()) { overscrollEffect ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState, overscrollEffect = overscrollEffect)
+                        .padding(bottom = LocalBottomContentPadding.current),
+                ) {
+                    PalettePreview(
+                        palette = currentPalette,
+                        isDarkTheme = theme.mode.isDark(),
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+                    )
+
+                    EditorCard(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Text(text = stringResource(R.string.theme_meta_title), style = MaterialTheme.typography.titleSmall)
+                        OutlinedTextField(
+                            state = themeNameState,
+                            inputTransformation = InputTransformation.maxLength(MaxThemeNameLength),
+                            label = { Text(stringResource(R.string.theme_name_optional)) },
+                            lineLimits = TextFieldLineLimits.SingleLine,
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                            onKeyboardAction = { applyTheme() },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Button(onClick = ::applyTheme, shapes = buttonPressShapes(), modifier = Modifier.fillMaxWidth()) {
+                            Text(stringResource(R.string.theme_apply_button))
+                        }
+                    }
+
+                    SeedRolePicker(
+                        activeRole = activeRole,
+                        onRoleChange = { activeRole = it },
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+
+                    SeedColorEditor(
+                        role = activeRole,
+                        color = when (activeRole) {
+                            SeedRole.PRIMARY -> primary
+                            SeedRole.SECONDARY -> secondary
+                            SeedRole.TERTIARY -> tertiary
+                            SeedRole.NEUTRAL -> neutral
+                        },
+                        onColorChange = { color ->
+                            when (activeRole) {
+                                SeedRole.PRIMARY -> primary = color
+                                SeedRole.SECONDARY -> secondary = color
+                                SeedRole.TERTIARY -> tertiary = color
+                                SeedRole.NEUTRAL -> neutral = color
+                            }
+                        },
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+            }
+        }
+
+        MusicExtendedFloatingActionButtons(
+            listOf(
+                ExtendedFloatingActionButtonContent(
+                    label = stringResource(R.string.import_theme),
+                    icon = MusicIcons.FileOpen,
+                    onClick = { importTheme.launch(ThemeFileTypes) },
+                ),
+                ExtendedFloatingActionButtonContent(
+                    label = stringResource(R.string.export_theme),
+                    icon = MusicIcons.Share,
+                    onClick = { exportTheme.launch("${themeFileName(themeName)}.json") },
+                    isPrimary = true,
+                ),
+            ),
+        )
+    }
+}
+
+/** A file name for the theme: its name, kept to characters any file system takes, or the app's default. */
+private fun themeFileName(themeName: String): String =
+    themeName.trim()
+        .ifBlank { "Music Theme" }
+        .replace(Regex("[^a-zA-Z0-9 _\\-]"), "_")
+        .take(64)
+
+@Composable
+private fun EditorCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = roundedShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            content()
+        }
+    }
+}
+
+/** The four seeds as chips, two by two, the one being edited filled. */
+@Composable
+private fun SeedRolePicker(
+    activeRole: SeedRole,
+    onRoleChange: (SeedRole) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    EditorCard(modifier = modifier) {
+        Text(text = stringResource(R.string.theme_seed_colors), style = MaterialTheme.typography.titleSmall)
+        SeedRole.entries.chunked(2).forEach { rowRoles ->
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                rowRoles.forEach { role ->
+                    SeedChip(
+                        label = stringResource(role.labelRes),
+                        selected = role == activeRole,
+                        onClick = { onRoleChange(role) },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeedChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.clip(pillShape).clickable(onClick = onClick),
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+        shape = pillShape,
+        shadowElevation = if (selected) 6.dp else 0.dp,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+        )
+    }
+}
+
+/**
+ * The seed being edited: its swatch and hex, copyable; a hex field that takes it as typed; a slider for
+ * each channel; and the presets' colours to start from.
+ */
+@Composable
+private fun SeedColorEditor(
+    role: SeedRole,
+    color: Color,
+    onColorChange: (Color) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val argb = color.toArgb()
+    var red by rememberSaveable(role) { mutableIntStateOf((argb shr 16) and 0xFF) }
+    var green by rememberSaveable(role) { mutableIntStateOf((argb shr 8) and 0xFF) }
+    var blue by rememberSaveable(role) { mutableIntStateOf(argb and 0xFF) }
+    LaunchedEffect(role, argb) {
+        red = (argb shr 16) and 0xFF
+        green = (argb shr 8) and 0xFF
+        blue = argb and 0xFF
+    }
+
+    val hex = remember(argb) { String.format("#%08X", argb) }
+    val hexInput = rememberSaveable(role, saver = TextFieldState.Saver) { TextFieldState(hex) }
+    var hexError by rememberSaveable(role) { mutableStateOf(false) }
+    // Follows the colour however it changed, except while the field holds something that is not one yet.
+    LaunchedEffect(hex) { if (!hexError && hexInput.text.toString() != hex) hexInput.setTextAndPlaceCursorAtEnd(hex) }
+    // What is typed, taken as the colour as soon as it is one.
+    LaunchedEffect(hexInput) {
+        snapshotFlow { hexInput.text.toString() }.drop(1).collect { typed ->
+            val parsed = runCatching {
+                val normalized = typed.trim().let { if (it.startsWith("#")) it else "#$it" }
+                Color(android.graphics.Color.parseColor(normalized))
+            }.getOrNull()
+            hexError = parsed == null
+            parsed?.let(onColorChange)
+        }
+    }
+
+    fun commitChannels() {
+        hexError = false
+        onColorChange(Color((0xFF shl 24) or (red shl 16) or (green shl 8) or blue))
+    }
+
+    EditorCard(modifier = modifier) {
+        Text(
+            text = stringResource(R.string.theme_editor_title, stringResource(role.labelRes)),
+            style = MaterialTheme.typography.titleSmall,
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(54.dp)
+                    .shadow(8.dp, CircleShape)
+                    .clip(CircleShape)
+                    .background(color)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = stringResource(R.string.theme_editor_hex),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(text = hex, style = MaterialTheme.typography.titleSmall)
+            }
+            Surface(shape = pillShape, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Row(
+                    modifier = Modifier
+                        .clickable { context.copyToClipboard(hex, context.getString(R.string.copied)) }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(MusicIcons.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text(text = stringResource(R.string.copy), style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        }
+
+        OutlinedTextField(
+            state = hexInput,
+            inputTransformation = InputTransformation.maxLength(12),
+            label = { Text(stringResource(R.string.theme_editor_hex_input)) },
+            isError = hexError,
+            lineLimits = TextFieldLineLimits.SingleLine,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrectEnabled = false, keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done),
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        ChannelSlider(label = "R", value = red, color = Color(0xFFE53935)) {
+            red = it
+            commitChannels()
+        }
+        ChannelSlider(label = "G", value = green, color = Color(0xFF43A047)) {
+            green = it
+            commitChannels()
+        }
+        ChannelSlider(label = "B", value = blue, color = Color(0xFF1E88E5)) {
+            blue = it
+            commitChannels()
+        }
+
+        PresetSwatches(current = color, onPick = onColorChange)
+    }
+}
+
+/** One colour channel, 0 to 255, in that channel's own colour. */
+@Composable
+private fun ChannelSlider(
+    label: String,
+    value: Int,
+    color: Color,
+    onValueChange: (Int) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Surface(shape = roundedShape(10.dp), color = color.copy(alpha = 0.18f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = color,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onValueChange(it.toInt().coerceIn(0, 255)) },
+            valueRange = 0f..255f,
+            colors = SliderDefaults.colors(
+                thumbColor = color,
+                activeTrackColor = color,
+                inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+            modifier = Modifier.weight(1f),
+        )
+        Text(text = value.toString(), style = MaterialTheme.typography.labelLarge, modifier = Modifier.width(44.dp))
+    }
+}
+
+/** The presets' own colours, to start a seed from. */
+@Composable
+private fun PresetSwatches(
+    current: Color,
+    onPick: (Color) -> Unit,
+) {
+    val swatches = remember {
+        ThemePalettes.all.map { it.seeds.primary }.distinctBy { it.toArgb() }.take(PresetSwatchCount)
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            text = stringResource(R.string.theme_presets_title),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            swatches.forEach { swatch ->
+                val selected = swatch.toArgb() == current.toArgb()
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .shadow(if (selected) 8.dp else 2.dp, CircleShape)
+                        .clip(CircleShape)
+                        .background(swatch)
+                        .border(
+                            width = if (selected) 2.dp else 1.dp,
+                            color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outlineVariant,
+                            shape = CircleShape,
+                        )
+                        .clickable { onPick(swatch) },
+                )
+            }
+        }
+    }
+}

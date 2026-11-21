@@ -1,0 +1,96 @@
+<resources>
+    <string name="video_back">Back</string>
+    <string name="video_play">Play</string>
+    <string name="video_pause">Pause</string>
+    <string name="video_queue">Queue</string>
+    <string name="video_more">More</string>
+    <string name="video_about">About this video</string>
+    <string name="video_uploaded">Uploaded %1$s</string>
+    <string name="video_about_refresh">Reload from its site</string>
+    <string name="video_about_unread">Its date, views and likes aren\'t known yet. Reload to read them from its site.</string>
+    <string name="video_about_refreshed">Details updated</string>
+    <string name="video_about_source">From %1$s · copy link</string>
+    <string name="video_about_link_copied">Link copied</string>
+    <string name="video_about_refresh_failed_because">Couldn\'t reload this video\'s details: %1$s</string>
+    <string name="video_about_refresh_failed">Couldn\'t reload this video\'s details</string>
+    <string name="video_bookmark_add">Bookmark this moment</string>
+    <string name="video_bookmark_remove">Remove bookmark</string>
+    <plurals name="video_views">
+        <item quantity="one">%1$s view</item>
+        <item quantity="other">%1$s views</item>
+    </plurals>
+    <plurals name="video_comments">
+        <item quantity="one">%1$s comment</item>
+        <item quantity="other">%1$s comments</item>
+    </plurals>
+    <plurals name="video_shares">
+        <item quantity="one">%1$s share</item>
+        <item quantity="other">%1$s shares</item>
+    </plurals>
+    <plurals name="video_likes">
+        <item quantity="one">%1$s like</item>
+        <item quantity="other">%1$s likes</item>
+    </plurals>
+
+    <string name="video_speed">Speed</string>
+    <!-- A playback speed, as in "1.5\u00D7". -->
+    <string name="video_speed_value">%1$s\u00D7</string>
+
+    <string name="video_aspect">Aspect ratio</string>
+    <string name="video_aspect_crop">Crop</string>
+    <string name="video_aspect_stretch">Stretch</string>
+    <string name="video_aspect_16_9">16:9</string>
+    <string name="video_aspect_18_9">18:9</string>
+    <string name="video_aspect_4_3">4:3</string>
+    <string name="video_aspect_original">Original</string>
+    <string name="video_aspect_fit">Fit to screen</string>
+
+    <string name="video_rotation_auto">Auto-rotate</string>
+    <string name="video_rotation_portrait">Locked to portrait</string>
+    <string name="video_rotation_landscape">Locked to landscape</string>
+
+    <string name="video_lock">Lock controls</string>
+    <string name="video_mute">Mute</string>
+    <string name="video_unmute">Unmute</string>
+    <string name="video_screenshot">Screenshot</string>
+    <string name="video_equalizer">Equalizer</string>
+    <string name="video_edit_info">Edit info</string>
+    <string name="video_shuffle">Shuffle</string>
+    <string name="video_screenshot_saved">Screenshot saved to Pictures/Music</string>
+    <string name="video_screenshot_failed">Couldn\'t take a screenshot</string>
+    <string name="video_floating_window">Floating window</string>
+
+    <string name="video_play_as_audio">Play as audio</string>
+    <string name="video_resumed_from">Resumed from</string>
+    <string name="video_start_over">Start over</string>
+    <string name="video_cannot_play">This video can\'t be played</string>
+
+    <string name="video_tracks">Audio &amp; subtitles</string>
+    <string name="video_tracks_audio">Audio</string>
+    <string name="video_tracks_subtitles">Subtitles</string>
+    <string name="video_tracks_off">Off</string>
+    <string name="video_tracks_add_file">Load from file</string>
+    <string name="video_tracks_sync">Sync</string>
+    <!-- A track a file says nothing about, as in "Track 2". -->
+    <string name="video_track_number">Track %1$d</string>
+    <string name="video_track_mono">Mono</string>
+    <string name="video_track_stereo">Stereo</string>
+    <string name="video_track_forced">Forced</string>
+    <string name="video_subtitle_failed">Couldn\'t read this subtitle file</string>
+    <string name="video_subtitle_copy">Copy subtitles</string>
+    <string name="video_subtitle_copied">Subtitles copied</string>
+    <string name="video_subtitle_copy_failed">Couldn\'t copy these subtitles</string>
+    <string name="video_subtitle_size">Size</string>
+    <string name="video_subtitle_size_small">S</string>
+    <string name="video_subtitle_size_medium">M</string>
+    <string name="video_subtitle_size_large">L</string>
+    <string name="video_subtitle_sync_earlier_symbol">\u2212</string>
+    <string name="video_subtitle_sync_later_symbol">+</string>
+    <string name="video_panel_close">Close</string>
+    <string name="video_hold_to_unlock">Hold to unlock</string>
+
+    <string name="video_brightness">Brightness</string>
+    <string name="video_volume">Volume</string>
+    <string name="video_chapters">Chapters</string>
+    <string name="video_chapter">Chapter %1$d · %2$s</string>
+</resources>

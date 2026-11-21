@@ -1,0 +1,135 @@
+package com.music.app.feature.settings.screen
+
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import com.music.app.core.designsystem.component.dialog.MusicConfirmationDialog
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.model.FastScrollTouchArea
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.library.R as LibraryR
+import com.music.app.feature.settings.R
+import com.music.app.core.designsystem.component.settings.SettingsActionItem
+import com.music.app.core.designsystem.component.settings.SettingsChoiceItem
+import com.music.app.core.designsystem.component.settings.SettingsList
+import com.music.app.core.designsystem.component.settings.SettingsNavigationItem
+import com.music.app.core.designsystem.component.settings.SettingsSection
+import com.music.app.core.designsystem.component.settings.SettingsSectionDivider
+import com.music.app.core.designsystem.component.settings.SettingsSwitchItem
+import com.music.app.feature.library.tabs.LibraryTabsScreen
+
+/** What the app shows, what it remembers, and what it does when the user reaches for it. */
+data object BehaviorScreen : Screen {
+    override val titleRes: Int get() = R.string.behavior_title
+
+    @Composable
+    override fun Content() {
+        val navigator = LocalNavigator.current
+        val viewModel: BehaviorSettingsViewModel = hiltViewModel()
+        val fastScrollTouchArea by viewModel.fastScrollTouchArea.collectAsStateWithLifecycle()
+        val hapticsEnabled by viewModel.hapticsEnabled.collectAsStateWithLifecycle()
+        val pullToRefreshEnabled by viewModel.pullToRefreshEnabled.collectAsStateWithLifecycle()
+        val pausesListenHistory by viewModel.pausesListenHistory.collectAsStateWithLifecycle()
+        val blockScreenshots by viewModel.blockScreenshots.collectAsStateWithLifecycle()
+        var isClearingListenHistory by rememberSaveable { mutableStateOf(false) }
+
+        SettingsList {
+            SettingsSection(stringResource(R.string.behavior_display_section)) {
+                SettingsNavigationItem(
+                    title = stringResource(LibraryR.string.library_tabs_title),
+                    summary = stringResource(R.string.library_tabs_summary),
+                    onClick = { navigator.go(LibraryTabsScreen) },
+                )
+                SettingsChoiceItem(
+                    title = stringResource(R.string.fast_scroll_touch_area_title),
+                    options = FastScrollTouchArea.entries.map { fastScrollTouchAreaLabel(it) },
+                    selectedIndex = fastScrollTouchArea.ordinal,
+                    onSelect = { viewModel.setFastScrollTouchArea(FastScrollTouchArea.entries[it]) },
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.pull_to_refresh_title),
+                    summary = stringResource(R.string.pull_to_refresh_summary),
+                    checked = pullToRefreshEnabled,
+                    onCheckedChange = viewModel::setPullToRefreshEnabled,
+                )
+            }
+
+            SettingsSectionDivider()
+
+            SettingsSection(stringResource(R.string.behavior_playing_section)) {
+                SettingsChoiceItem(
+                    title = stringResource(R.string.play_from_library_title),
+                    options = listOf(
+                        stringResource(R.string.play_from_all_tracks),
+                        stringResource(R.string.play_from_shown_list),
+                    ),
+                )
+                SettingsChoiceItem(
+                    title = stringResource(R.string.play_from_details_title),
+                    options = listOf(
+                        stringResource(R.string.play_from_shown_item),
+                        stringResource(R.string.play_from_all_tracks),
+                    ),
+                )
+            }
+
+            SettingsSectionDivider()
+
+            SettingsSection(stringResource(R.string.behavior_history_section)) {
+                SettingsSwitchItem(
+                    title = stringResource(R.string.pause_listen_history_title),
+                    summary = stringResource(R.string.pause_listen_history_summary),
+                    checked = pausesListenHistory,
+                    onCheckedChange = viewModel::setPausesListenHistory,
+                )
+                SettingsActionItem(
+                    title = stringResource(R.string.clear_listen_history_title),
+                    summary = stringResource(R.string.clear_listen_history_summary),
+                    onClick = { isClearingListenHistory = true },
+                )
+            }
+
+            SettingsSectionDivider()
+
+            SettingsSection(stringResource(R.string.behavior_privacy_section)) {
+                SettingsSwitchItem(
+                    title = stringResource(R.string.haptics_title),
+                    summary = stringResource(R.string.haptics_summary),
+                    checked = hapticsEnabled,
+                    onCheckedChange = viewModel::setHapticsEnabled,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.block_screenshots_title),
+                    summary = stringResource(R.string.block_screenshots_summary),
+                    checked = blockScreenshots,
+                    onCheckedChange = viewModel::setBlockScreenshots,
+                )
+            }
+        }
+
+        if (isClearingListenHistory) {
+            MusicConfirmationDialog(
+                title = stringResource(R.string.clear_listen_history_title),
+                message = stringResource(R.string.clear_listen_history_confirm),
+                confirmLabel = stringResource(R.string.clear_listen_history_action),
+                successMessage = stringResource(R.string.clear_listen_history_done),
+                failureMessage = stringResource(R.string.clear_listen_history_failed),
+                onDismiss = { isClearingListenHistory = false },
+                operation = viewModel::clearListenHistory,
+            )
+        }
+    }
+}
+
+@Composable
+private fun fastScrollTouchAreaLabel(touchArea: FastScrollTouchArea): String =
+    when (touchArea) {
+        FastScrollTouchArea.NARROW -> stringResource(R.string.fast_scroll_touch_area_narrow)
+        FastScrollTouchArea.STANDARD -> stringResource(R.string.fast_scroll_touch_area_standard)
+        FastScrollTouchArea.WIDE -> stringResource(R.string.fast_scroll_touch_area_wide)
+    }

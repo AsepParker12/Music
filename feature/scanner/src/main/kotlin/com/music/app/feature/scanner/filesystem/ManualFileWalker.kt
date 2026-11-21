@@ -1,0 +1,205 @@
+package com.music.app.feature.scanner.filesystem
+
+import android.content.Context
+import android.media.MediaMetadataRetriever
+import android.media.MediaScannerConnection
+import android.net.Uri
+import android.os.Build
+import android.os.storage.StorageManager
+import com.music.app.core.common.cover.withCoverVersion
+import com.music.app.core.common.format.repairedTagText
+import com.music.app.core.database.stableIdOf
+import com.music.app.feature.scanner.trackTitleOf
+import com.music.app.core.model.Track
+import com.music.app.core.model.UnknownNames
+import com.music.app.feature.scanner.ScanProgress
+import com.music.app.feature.scanner.ScanStep
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
+import java.io.FileInputStream
+import javax.inject.Inject
+
+/**
+ * Walks the device's storage roots with plain [File] I/O to find audio and video files that [MediaStore]
+ * missed - e.g. files pushed via `adb push` that haven't been indexed yet. Ported from Fossify
+ * Music Player's `MediaScanner.findTracksManually`/`findAudioFiles`.
+ *
+ * Only meaningful on API 29+ (Q), matching the source: the caller is expected to gate on that.
+ */
+class ManualFileWalker @Inject constructor(
+    @ApplicationContext private val context: Context,
+) {
+
+    /**
+     * @param pathsToSkip paths (individual files already known from MediaStore) or folders
+     * (user-excluded directories) to leave out of the walk entirely - and their whole subtree, in
+     * the case of a folder.
+     * @param onProgress told as the walk starts, then as each file found has its tags read.
+     */
+    fun findTracks(pathsToSkip: Set<String>, onProgress: (ScanProgress) -> Unit): List<Track> {
+        onProgress(ScanProgress(ScanStep.SEARCHING_STORAGE))
+        val audioFilePaths = mutableListOf<String>()
+        for (root in storageRoots()) {
+            findAudioFiles(File(root), audioFilePaths, pathsToSkip)
+        }
+
+        if (audioFilePaths.isEmpty()) {
+            return emptyList()
+        }
+
+        val tracks = audioFilePaths.mapIndexedNotNull { index, path ->
+            onProgress(ScanProgress(ScanStep.READING_TAGS, done = index, total = audioFilePaths.size))
+            extractTrack(path)
+        }
+
+        // Ask the system indexer to pick these files up so a future MediaStore query returns them
+        // with full metadata (art, stable ids, etc.) instead of relying on this manual fallback again.
+        val newPaths = audioFilePaths.filter { it !in pathsToSkip }
+        if (newPaths.isNotEmpty()) {
+            runCatching {
+                MediaScannerConnection.scanFile(context, newPaths.toTypedArray(), null, null)
+            }
+        }
+
+        return tracks
+    }
+
+    private fun findAudioFiles(file: File, destination: MutableList<String>, pathsToSkip: Set<String>) {
+        if (file.isHidden) {
+            return
+        }
+
+        val path = file.absolutePath
+        if (path in pathsToSkip) {
+            return
+        }
+
+        if (file.isFile) {
+            if (path.isMediaFile()) {
+                destination += path
+            }
+        } else if (file.isDirectory && !file.containsNoMedia()) {
+            file.listFiles()?.forEach { child ->
+                findAudioFiles(child, destination, pathsToSkip)
+            }
+        }
+    }
+
+    private fun extractTrack(path: String): Track? {
+        val retriever = MediaMetadataRetriever()
+        var inputStream: FileInputStream? = null
+
+        try {
+            try {
+                retriever.setDataSource(path)
+            } catch (_: Exception) {
+                inputStream = FileInputStream(path)
+                retriever.setDataSource(inputStream.fd)
+            }
+
+            // What a video is told by - its extension alone cannot, an .mp4 or a .webm being either.
+            val isVideo = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) == "yes"
+            val title = trackTitleOf(retriever.tagText(MediaMetadataRetriever.METADATA_KEY_TITLE), path)
+
+            val artist = retriever.tagText(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+                ?: retriever.tagText(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST)
+                ?: UnknownNames.ARTIST
+            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            val folderPath = File(path).parent.orEmpty()
+            val folderName = folderPath.substringAfterLast('/').ifEmpty { UnknownNames.ALBUM }
+            val album = if (isVideo) folderName else retriever.tagText(MediaMetadataRetriever.METADATA_KEY_ALBUM) ?: folderName
+            val trackNumber = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER).firstNumber()
+            val discNumber = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER).firstNumber()
+            val genre = retriever.tagText(MediaMetadataRetriever.METADATA_KEY_GENRE).takeUnless { isVideo }
+            val dateAddedSeconds = runCatching { File(path).lastModified() / 1000L }.getOrDefault(0L)
+
+            return Track(
+                // Path-derived, so the same file keeps the same id across every future scan.
+                id = stableIdOf(path),
+                // There's no MediaStore row for a manually-discovered file, so derive a stable
+                // stand-in id from its path (the same path is also the DB's real unique key).
+                mediaStoreId = stableIdOf(path),
+                title = title,
+                artist = artist,
+                artistId = 0L,
+                album = album,
+                albumId = 0L,
+                genre = genre,
+                genreId = null,
+                path = path,
+                folderPath = folderPath,
+                durationMs = durationMs,
+                trackNumber = trackNumber,
+                discNumber = discNumber,
+                // Read from the file with every other track's - see FileYears.
+                year = null,
+                dateAddedSeconds = dateAddedSeconds,
+                // Its own cover, as every track's and video's is, stamped with its latest change.
+                coverArtUri = Uri.fromFile(File(path)).withCoverVersion(File(path).lastModified()),
+                isManuallyScanned = true,
+                isVideo = isVideo,
+                width = if (isVideo) retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0 else 0,
+                height = if (isVideo) retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0 else 0,
+                sizeBytes = File(path).length(),
+            )
+        } catch (_: Exception) {
+            return null
+        } finally {
+            runCatching {
+                inputStream?.close()
+                retriever.release()
+            }
+        }
+    }
+
+    /** The device's internal storage root plus any mounted SD card / USB storage roots. */
+    private fun storageRoots(): List<String> {
+        val roots = mutableSetOf<String>()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val storageManager = context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+            storageManager?.storageVolumes?.forEach { volume ->
+                volume.directory?.absolutePath?.let { roots += it }
+            }
+        }
+
+        if (roots.isEmpty()) {
+            // Fallback for API < 30 (StorageVolume.getDirectory() requires R) and as a safety net if
+            // StorageManager reports nothing: the primary shared storage root, plus any secondary
+            // storage roots inferred from the app's package-specific external directories
+            // (".../Android/data/<pkg>/files" -> the volume root above "Android").
+            android.os.Environment.getExternalStorageDirectory()?.absolutePath?.let { roots += it }
+
+            context.getExternalFilesDirs(null)?.forEach { dir ->
+                val path = dir?.absolutePath ?: return@forEach
+                val androidDirIndex = path.indexOf("/Android/data")
+                if (androidDirIndex > 0) {
+                    roots += path.substring(0, androidDirIndex)
+                }
+            }
+        }
+
+        return roots.toList()
+    }
+}
+
+private val MEDIA_EXTENSIONS = setOf(
+    "mp3", "m4a", "m4b", "m4p", "wav", "wma", "ogg", "oga", "opus", "flac", "aac",
+    "mid", "midi", "3gp", "3ga", "amr", "awb", "mka", "ape", "aiff", "aif", "dsf", "alac",
+    "mp4", "m4v", "mkv", "webm", "mov", "avi",
+)
+
+private fun String.isMediaFile(): Boolean =
+    substringAfterLast('.', missingDelimiterValue = "").lowercase() in MEDIA_EXTENSIONS
+
+private fun File.containsNoMedia(): Boolean = File(this, ".nomedia").exists()
+
+/** A tag the file holds, as it meant it - see [repairedTagText]. */
+private fun MediaMetadataRetriever.tagText(key: Int): String? = extractMetadata(key)?.repairedTagText()
+
+private fun String?.firstNumber(): Int? =
+    this?.trim()
+        ?.substringBefore('/')
+        ?.takeWhile { it.isDigit() }
+        ?.toIntOrNull()
+        ?.takeIf { it > 0 }

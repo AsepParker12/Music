@@ -1,0 +1,48 @@
+plugins {
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
+}
+
+android {
+    namespace = "com.music.app.feature.scanner"
+    compileSdk = 37
+
+    defaultConfig {
+        minSdk = 26
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation(project(":core:model"))
+    implementation(project(":core:database"))
+    implementation(project(":core:data"))
+    implementation(project(":core:datastore"))
+    implementation(project(":core:common"))
+    implementation(project(":core:designsystem"))
+    // What a downloaded video carries of its site - see VideoExtras.
+    implementation(project(":core:downloader"))
+
+    implementation(libs.androidx.room.ktx)
+    implementation(libs.androidx.core.ktx)
+
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+
+    implementation(libs.kotlinx.coroutines.android)
+    // Reads each music file's date as the tag editor writes it - the same TagLib, so what is written is what is read.
+    implementation(libs.taglib)
+
+    testImplementation(libs.junit)
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}

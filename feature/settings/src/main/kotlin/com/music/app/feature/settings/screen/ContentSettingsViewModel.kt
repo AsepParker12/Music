@@ -1,0 +1,102 @@
+package com.music.app.feature.settings.screen
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.music.app.core.common.coroutines.launchOperation
+import com.music.app.core.data.sort.LibrarySortOrders
+import com.music.app.core.datastore.CoverMode
+import com.music.app.core.datastore.ImageSettings
+import com.music.app.core.datastore.LibrarySettings
+import com.music.app.core.datastore.SortSettings
+import com.music.app.core.model.FolderView
+import com.music.app.core.model.sort.SortDirection
+import com.music.app.core.model.sort.SortScope
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+
+/** The stored library, sorting and image settings the [ContentScreen] rows are connected to. */
+@HiltViewModel
+class ContentSettingsViewModel @Inject constructor(
+    private val librarySettings: LibrarySettings,
+    private val imageSettings: ImageSettings,
+    private val sortSettings: SortSettings,
+    private val sortOrders: LibrarySortOrders,
+) : ViewModel() {
+
+    val coverMode: StateFlow<CoverMode> = imageSettings.coverMode.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), imageSettings.coverMode.value)
+
+    fun setCoverMode(mode: CoverMode) {
+        viewModelScope.launch { imageSettings.setCoverMode(mode) }
+    }
+
+    val forceSquareCovers: StateFlow<Boolean> = imageSettings.forceSquareCovers.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), imageSettings.forceSquareCovers.value)
+
+    fun setForceSquareCovers(enabled: Boolean) {
+        viewModelScope.launch { imageSettings.setForceSquareCovers(enabled) }
+    }
+
+    /**
+     * Unlike Auxio, which re-reads the whole library when this changes, nothing needs rescanning here:
+     * names are reduced to their sort keys at sort time, so every list simply re-sorts itself.
+     */
+    val intelligentSortingEnabled: StateFlow<Boolean> = librarySettings.intelligentSortingEnabled.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), librarySettings.intelligentSortingEnabled.value)
+
+    fun setIntelligentSortingEnabled(enabled: Boolean) {
+        viewModelScope.launch { librarySettings.setIntelligentSortingEnabled(enabled) }
+    }
+
+    /** Whether a credit naming several artists is each of them - the library rescans itself as it changes, see `MediaScanner`. */
+    val separateArtists: StateFlow<Boolean> = librarySettings.separateArtists.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), librarySettings.separateArtists.value)
+
+    fun setSeparateArtists(enabled: Boolean) {
+        viewModelScope.launch { librarySettings.setSeparateArtists(enabled) }
+    }
+
+    val hidesCollaborators: StateFlow<Boolean> = librarySettings.hidesCollaborators.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), librarySettings.hidesCollaborators.value)
+
+    fun setHidesCollaborators(enabled: Boolean) {
+        viewModelScope.launch { librarySettings.setHidesCollaborators(enabled) }
+    }
+
+    val automaticReloading: StateFlow<Boolean> = librarySettings.automaticReloading.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), librarySettings.automaticReloading.value)
+
+    fun setAutomaticReloading(enabled: Boolean) {
+        viewModelScope.launch { librarySettings.setAutomaticReloading(enabled) }
+    }
+
+    /** How the Folders tab lists folders inside one another - every list follows it at once, with no rescan. */
+    val folderView: StateFlow<FolderView> = librarySettings.folderView.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), librarySettings.folderView.value)
+
+    fun setFolderView(view: FolderView) {
+        viewModelScope.launch { librarySettings.setFolderView(view) }
+    }
+
+    val newTracksDirection: StateFlow<SortDirection> = sortSettings.newTracksDirection.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sortSettings.newTracksDirection.value)
+
+    fun setNewTracksDirection(direction: SortDirection) {
+        viewModelScope.launch { sortSettings.setNewTracksDirection(direction) }
+    }
+
+    val defaultSortScope: StateFlow<SortScope> = sortSettings.defaultScope.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), sortSettings.defaultScope.value)
+
+    fun setDefaultSortScope(scope: SortScope) {
+        viewModelScope.launch { sortSettings.setDefaultScope(scope) }
+    }
+
+    fun resetSorting(onFinished: (succeeded: Boolean) -> Unit) {
+        viewModelScope.launchOperation(onFinished) { sortOrders.reset() }
+    }
+}

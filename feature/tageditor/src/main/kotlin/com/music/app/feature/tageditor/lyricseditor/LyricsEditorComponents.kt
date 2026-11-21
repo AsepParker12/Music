@@ -1,0 +1,453 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
+package com.music.app.feature.tageditor.lyricseditor
+
+import android.os.SystemClock
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.music.app.core.designsystem.R as DesignR
+import com.music.app.core.designsystem.component.SelectionState
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.actionButton
+import com.music.app.core.designsystem.component.dialog.MusicDialog
+import com.music.app.core.designsystem.component.selectableRow
+import com.music.app.core.designsystem.component.sheet.MusicBottomSheet
+import com.music.app.core.designsystem.component.sheet.MusicOptionRow
+import com.music.app.core.designsystem.theme.buttonPressShapes
+import com.music.app.core.designsystem.theme.iconButtonPressShapes
+import com.music.app.feature.tageditor.LyricsResultCard
+import com.music.app.feature.tageditor.LyricsSearchStatus
+import com.music.app.feature.tageditor.R
+import com.music.app.feature.tageditor.lyrics.FoundLyrics
+import com.music.app.core.designsystem.icon.MusicIcons
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.maxLength
+import androidx.compose.foundation.text.input.then
+import androidx.compose.ui.text.input.KeyboardCapitalization
+
+/** Digits that all take one width, so a time keeps its place as it is nudged. */
+private const val TabularFigures = "tnum"
+
+/** The room on either side of a time part's digits, inside the highlight it takes while typed in. */
+private val TimePartPadding = 2.dp
+
+/** Room for the cursor after a time part's last digit, so a full field never scrolls its first one away. */
+private val TimePartCursorWidth = 2.dp
+
+/** How much of the selection colour washes over a selected line - as over every selected row in the app. */
+private const val SelectedLineTintAlpha = 0.12f
+
+/** How wide the mark down a line changed by hand is. */
+private val EditedMarkWidth = 4.dp
+
+/**
+ * One line of the editor: its time on the left, each part typed in or nudged - a step later from the button above,
+ * earlier from the one below; its words, which a tap opens for writing; and on the right the [actions] menu, and the
+ * button that times it at where the player is - only while the track is the one playing, [canStamp] - told to
+ * [onStamp] by when the finger came down on it, so the line is timed at the press rather than the lift. The line the
+ * player is on, [isCurrent], is marked, and one changed by hand, [isEdited], carries a mark down its start.
+ *
+ * It joins [selection] as every row in the app does: a long press selects it, and while lines are selected a tap
+ * selects or lets go of it rather than opening its words. It is painted on the list's own surface, so a swipe aside
+ * - see [LyricsEditor] - uncovers its action rather than showing through it.
+ */
+@Composable
+internal fun LyricsLineRow(
+    line: LyricsLine,
+    isCurrent: Boolean,
+    isEdited: Boolean,
+    canStamp: Boolean,
+    selection: SelectionState,
+    actions: List<TopBarAction>,
+    onSetTime: (Long) -> Unit,
+    onStamp: (pressedAtUptimeMs: Long) -> Unit,
+    onEditText: () -> Unit,
+) {
+    // When the finger last came down on the stamp button - taken as it lands, ahead of the button's own handling,
+    // which a list delays to tell a tap from a scroll. Null for a press that came another way, a key's.
+    var stampPressedAtUptimeMs by remember { mutableStateOf<Long?>(null) }
+    val editedColor = MaterialTheme.colorScheme.primary
+    val surface = MaterialTheme.colorScheme.surface
+    val color = when {
+        selection.isSelected(line.id) -> MaterialTheme.colorScheme.primary.copy(alpha = SelectedLineTintAlpha).compositeOver(surface)
+        isCurrent -> MaterialTheme.colorScheme.secondaryContainer
+        else -> surface
+    }
+    Surface(color = color) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .selectableRow(selection, selectionKey = line.id, dragSelection = null, onClick = onEditText)
+                // Drawn rather than laid out, so a line keeps its shape as it is marked.
+                .drawBehind { if (isEdited) drawRect(editedColor, size = Size(EditedMarkWidth.toPx(), size.height)) }
+                .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TimeControls(timeMs = line.timeMs, onSetTime = onSetTime)
+            Text(
+                text = line.text.ifEmpty { stringResource(R.string.lyrics_editor_write_line) },
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (line.text.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else Color.Unspecified,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                LineActionsMenu(actions)
+                IconButton(
+                    shapes = iconButtonPressShapes(),
+                    onClick = {
+                        onStamp(stampPressedAtUptimeMs ?: SystemClock.uptimeMillis())
+                        stampPressedAtUptimeMs = null
+                    },
+                    enabled = canStamp,
+                    modifier = Modifier.pointerInput(Unit) {
+                        awaitEachGesture {
+                            stampPressedAtUptimeMs = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial).uptimeMillis
+                        }
+                    },
+                ) {
+                    Icon(MusicIcons.Schedule, contentDescription = stringResource(R.string.lyrics_editor_time_to_now))
+                }
+            }
+        }
+    }
+}
+
+/** What else can be done to a line, in a menu opening from its plus. */
+@Composable
+private fun LineActionsMenu(actions: List<TopBarAction>) {
+    var isExpanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(shapes = iconButtonPressShapes(), onClick = { isExpanded = true }) {
+            Icon(MusicIcons.Add, contentDescription = stringResource(R.string.lyrics_editor_line_actions))
+        }
+        DropdownMenu(expanded = isExpanded, onDismissRequest = { isExpanded = false }) {
+            actions.forEach { action ->
+                DropdownMenuItem(
+                    text = { Text(action.label) },
+                    leadingIcon = { Icon(action.icon, contentDescription = null) },
+                    enabled = action.enabled,
+                    onClick = {
+                        isExpanded = false
+                        action.onClick()
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** A time, "01 : 02 . 345", each part typed in or nudged - see [TimePartControl]. */
+@Composable
+private fun TimeControls(timeMs: Long, onSetTime: (Long) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        LyricsTimePart.entries.forEachIndexed { index, part ->
+            if (index > 0) TimeSeparator(if (part == LyricsTimePart.MILLISECONDS) "." else ":")
+            TimePartControl(part = part, timeMs = timeMs, onSetTime = onSetTime)
+        }
+    }
+}
+
+/** One [part] of a line's time: typed in, between a button that nudges it a step later and one that nudges it a step earlier. */
+@Composable
+private fun TimePartControl(part: LyricsTimePart, timeMs: Long, onSetTime: (Long) -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        IconButton(shapes = iconButtonPressShapes(), onClick = { onSetTime(timeMs + part.stepMs) }) {
+            Icon(MusicIcons.KeyboardArrowUp, contentDescription = stringResource(R.string.lyrics_editor_later), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        TimePartField(
+            text = part.of(timeMs),
+            digits = part.digits,
+            onDone = { value -> onSetTime(part.withValue(timeMs, value)) },
+        )
+        IconButton(shapes = iconButtonPressShapes(), onClick = { onSetTime(timeMs - part.stepMs) }) {
+            Icon(MusicIcons.KeyboardArrowDown, contentDescription = stringResource(R.string.lyrics_editor_earlier), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/**
+ * A part of a time, typed in on the number pad: all of it chosen as it is tapped, so typing replaces it, and handed
+ * over by [onDone] as the field is left - by the keyboard's done, or a tap elsewhere - where it changed. Left empty,
+ * it goes back to what it was.
+ */
+@Composable
+private fun TimePartField(text: String, digits: Int, onDone: (Long) -> Unit) {
+    val focusManager = LocalFocusManager.current
+    val textStyle = MaterialTheme.typography.titleMedium.copy(
+        fontFeatureSettings = TabularFigures,
+        color = MaterialTheme.colorScheme.onSurface,
+        textAlign = TextAlign.Center,
+    )
+    // As wide as every digit it can hold, whatever it holds now - digits all take one width - so the field neither
+    // clips its value nor moves as it changes.
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val width = remember(textStyle, digits, density) {
+        val digitsWidth = with(density) { textMeasurer.measure("0".repeat(digits), textStyle).size.width.toDp() }
+        digitsWidth + TimePartPadding * 2 + TimePartCursorWidth
+    }
+    val field = remember(text) { TextFieldState(text) }
+    var isFocused by remember { mutableStateOf(false) }
+    // A frame after focus, once the tap that gave it has placed its cursor, so the choosing is not undone by it.
+    LaunchedEffect(isFocused) {
+        if (isFocused) field.edit { selection = TextRange(0, length) }
+    }
+    BasicTextField(
+        state = field,
+        // Digits alone, no more than the part holds: anything else is never typed in.
+        inputTransformation = InputTransformation.maxLength(digits).then { if (!asCharSequence().all(Char::isDigit)) revertAllChanges() },
+        textStyle = textStyle,
+        lineLimits = TextFieldLineLimits.SingleLine,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+        onKeyboardAction = { focusManager.clearFocus() },
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        decorator = { innerTextField ->
+            Box(
+                modifier = Modifier
+                    .clip(MaterialTheme.shapes.extraSmall)
+                    .background(if (isFocused) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent)
+                    .padding(horizontal = TimePartPadding),
+            ) {
+                innerTextField()
+            }
+        },
+        modifier = Modifier
+            .width(width)
+            .onFocusChanged { focus ->
+                if (isFocused && !focus.isFocused) {
+                    val typed = field.text.toString()
+                    val value = typed.toLongOrNull()
+                    if (value != null && typed != text) onDone(value) else field.setTextAndPlaceCursorAtEnd(text)
+                }
+                isFocused = focus.isFocused
+            },
+    )
+}
+
+@Composable
+private fun TimeSeparator(text: String) {
+    Text(text = text, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** Where lyrics can be brought in from, each taking the lines' place: the web, the clipboard, or a lyrics file. */
+@Composable
+internal fun AddLyricsSheet(
+    onSearch: () -> Unit,
+    onPaste: () -> Unit,
+    onPickFile: () -> Unit,
+    onDismissRequest: () -> Unit,
+) {
+    MusicBottomSheet(title = stringResource(R.string.lyrics_editor_add_from), onDismissRequest = onDismissRequest) {
+        MusicOptionRow(label = stringResource(R.string.lyrics_editor_search), icon = MusicIcons.Search, onClick = { onSearch(); dismiss() })
+        MusicOptionRow(label = stringResource(R.string.lyrics_editor_paste), icon = MusicIcons.ContentPaste, onClick = { onPaste(); dismiss() })
+        MusicOptionRow(label = stringResource(R.string.lyrics_editor_pick_file), icon = MusicIcons.Description, onClick = { onPickFile(); dismiss() })
+    }
+}
+
+/**
+ * The lyrics the web has for the track, as they arrive, best first - the tag editor's own cards. Picking a set has
+ * it take the lines' place.
+ */
+@Composable
+internal fun FoundLyricsSheet(
+    found: List<FoundLyrics>,
+    isSearching: Boolean,
+    trackDurationMs: Long,
+    onPick: (FoundLyrics) -> Unit,
+    onDismissRequest: () -> Unit,
+) {
+    MusicBottomSheet(title = stringResource(R.string.lyrics_editor_found), onDismissRequest = onDismissRequest) {
+        found.forEach { lyrics ->
+            LyricsResultCard(
+                found = lyrics,
+                trackDurationMs = trackDurationMs,
+                isApplied = false,
+                onApply = {
+                    onPick(lyrics)
+                    dismiss()
+                },
+            )
+        }
+        LyricsSearchStatus(isSearching = isSearching, hasResults = found.isNotEmpty())
+    }
+}
+
+/** Writing one line's words. */
+@Composable
+internal fun LyricsLineTextDialog(initialText: String, onDismiss: () -> Unit, onDone: (String) -> Unit) {
+    val text = rememberTextFieldState(initialText)
+    val focusRequester = remember { FocusRequester() }
+    // Read here rather than inside the buttons: they are built outside composition.
+    val lineButton0 = stringResource(DesignR.string.confirmation_dialog_cancel)
+    val lineButton1 = stringResource(R.string.lyrics_editor_done)
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.lyrics_editor_line),
+        buttons = {
+            actionButton(label = lineButton0, onClick = onDismiss)
+            actionButton(label = lineButton1, onClick = { onDone(text.text.toString()) })
+        },
+    ) {
+        OutlinedTextField(
+            state = text,
+            lineLimits = TextFieldLineLimits.SingleLine,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+            onKeyboardAction = { onDone(text.text.toString()) },
+            modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+        )
+    }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+}
+
+/** The lyrics written out in full, as they are kept - LRC, each line at its time - to read, or to change all at once. */
+@Composable
+internal fun LyricsTextDialog(initialText: String, onDismiss: () -> Unit, onDone: (String) -> Unit) {
+    val text = rememberTextFieldState(initialText)
+    // Read here rather than inside the buttons: they are built outside composition.
+    val lyricsAsTextButton0 = stringResource(DesignR.string.confirmation_dialog_cancel)
+    val lyricsAsTextButton1 = stringResource(R.string.lyrics_editor_done)
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.lyrics_editor_text_title),
+        buttons = {
+            actionButton(label = lyricsAsTextButton0, onClick = onDismiss)
+            actionButton(label = lyricsAsTextButton1, onClick = { onDone(text.text.toString()) })
+        },
+    ) {
+        OutlinedTextField(
+            state = text,
+            textStyle = MaterialTheme.typography.bodyMedium,
+            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+            modifier = Modifier.fillMaxWidth().heightIn(max = LyricsTextMaxHeight),
+        )
+    }
+}
+
+/** As tall as the lyrics written out may stand in their dialog, which scrolls them past it. */
+private val LyricsTextMaxHeight = 360.dp
+
+/**
+ * Moving the times of the selected lines all at once by one amount - later, or earlier with its sign turned - set
+ * as a line's own time is.
+ */
+@Composable
+internal fun BatchEditDialog(onDismiss: () -> Unit, onAdjust: (deltaMs: Long) -> Unit) {
+    var isEarlier by rememberSaveable { mutableStateOf(false) }
+    var offsetMs by rememberSaveable { mutableLongStateOf(0L) }
+    // Read here rather than inside the buttons: they are built outside composition.
+    val batchEditButton0 = stringResource(DesignR.string.confirmation_dialog_cancel)
+    val batchEditButton1 = stringResource(R.string.lyrics_editor_adjust)
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.lyrics_editor_batch_edit),
+        buttons = {
+            actionButton(label = batchEditButton0, onClick = onDismiss)
+            actionButton(label = batchEditButton1, onClick = { onAdjust(if (isEarlier) -offsetMs else offsetMs) }, enabled = offsetMs > 0L)
+        },
+    ) {
+        Text(stringResource(R.string.lyrics_editor_offset_message), style = MaterialTheme.typography.bodyMedium)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(shapes = buttonPressShapes(), onClick = { isEarlier = !isEarlier }) {
+                Text(if (isEarlier) "\u2212" else "+", style = MaterialTheme.typography.titleMedium)
+            }
+            TimeControls(timeMs = offsetMs, onSetTime = { offsetMs = it.coerceAtLeast(0L) })
+        }
+    }
+}
+
+/** Asked before every line is taken out - which, saved, takes the lyrics out of the file. */
+@Composable
+internal fun DeleteLyricsDialog(onDismiss: () -> Unit, onDelete: () -> Unit) {
+    // Read here rather than inside the buttons: they are built outside composition.
+    val deleteEmbeddedLyricsButton0 = stringResource(DesignR.string.confirmation_dialog_cancel)
+    val deleteEmbeddedLyricsButton1 = stringResource(R.string.lyrics_editor_delete)
+    MusicDialog(
+        onDismissRequest = onDismiss,
+        title = stringResource(R.string.lyrics_editor_delete_title),
+        buttons = {
+            actionButton(label = deleteEmbeddedLyricsButton0, onClick = onDismiss)
+            actionButton(label = deleteEmbeddedLyricsButton1, onClick = onDelete)
+        },
+    ) {
+        Text(stringResource(R.string.lyrics_editor_delete_message), style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/** Asked before leaving an editor with changes not kept, which leaving would lose - the lyrics editor's and the tag editor's. */
+@Composable
+internal fun DiscardChangesDialog(onKeepEditing: () -> Unit, onDiscard: () -> Unit) {
+    // Read here rather than inside the buttons: they are built outside composition.
+    val discardChangesButton0 = stringResource(R.string.lyrics_editor_keep_editing)
+    val discardChangesButton1 = stringResource(R.string.lyrics_editor_discard)
+    MusicDialog(
+        onDismissRequest = onKeepEditing,
+        title = stringResource(R.string.lyrics_editor_discard_title),
+        buttons = {
+            actionButton(label = discardChangesButton0, onClick = onKeepEditing)
+            actionButton(label = discardChangesButton1, onClick = onDiscard)
+        },
+    ) {
+        Text(stringResource(R.string.lyrics_editor_discard_message), style = MaterialTheme.typography.bodyMedium)
+    }
+}

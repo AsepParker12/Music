@@ -1,0 +1,62 @@
+<resources>
+    <string name="player_now_playing">Now Playing</string>
+    <string name="player_collapse">Collapse player</string>
+    <string name="player_equalizer">Equalizer</string>
+    <string name="player_hidden_thumbnail">Cover hidden</string>
+    <!-- The header's second line: what kind of collection the queue plays from, then how much it holds. -->
+    <string name="player_playing_from_detail">%1$s · %2$s</string>
+    <plurals name="player_song_count">
+        <item quantity="one">1 song</item>
+        <item quantity="other">%d songs</item>
+    </plurals>
+    <plurals name="player_video_count">
+        <item quantity="one">1 video</item>
+        <item quantity="other">%d videos</item>
+    </plurals>
+    <string name="player_playing_from_all_tracks">All tracks</string>
+    <string name="player_playing_from_videos">Videos</string>
+    <string name="player_collection_kind_album">Album</string>
+    <string name="player_collection_kind_artist">Artist</string>
+    <string name="player_collection_kind_genre">Genre</string>
+    <string name="player_collection_kind_playlist">Playlist</string>
+    <string name="player_collection_kind_folder">Folder</string>
+    <string name="player_queue">Queue</string>
+    <string name="player_lyrics">Lyrics</string>
+    <string name="player_sleep_timer">Sleep timer</string>
+    <string name="player_end_of_song">End of song</string>
+    <plurals name="player_minute">
+        <item quantity="one">1 minute</item>
+        <item quantity="other">%d minutes</item>
+    </plurals>
+    <string name="player_more_options">More options</string>
+    <string name="player_like">Like</string>
+    <string name="player_shuffle_on">Shuffle on</string>
+    <string name="player_shuffle">Shuffle</string>
+    <string name="player_repeat">Repeat</string>
+    <string name="player_play">Play</string>
+    <string name="player_pause">Pause</string>
+    <string name="player_previous">Previous</string>
+    <string name="player_next">Next</string>
+    <string name="player_removed_song_from_queue">Removed \"%s\" from queue</string>
+    <string name="player_undo">Undo</string>
+    <string name="player_close">Close</string>
+    <string name="player_copied_title">Copied Title</string>
+    <string name="player_copied_artist">Copied Artist</string>
+    <string name="player_lyrics_not_found">Lyrics not found</string>
+    <string name="player_lyrics_finding">Looking for lyrics</string>
+    <string name="player_lyrics_finding_body">They will show here as soon as they are found</string>
+    <string name="player_lyrics_search">Search</string>
+    <string name="player_lyrics_resume">Resume</string>
+    <string name="player_max_selection_limit">Up to %d lines can be selected</string>
+    <string name="player_share">Share</string>
+    <string name="player_share_lyrics">Share lyrics</string>
+    <string name="player_edit">Edit lyrics</string>
+    <string name="player_lyrics_sync_offset">Lyrics sync offset</string>
+    <string name="player_lyrics_sync_offset_slider">Slider</string>
+    <string name="player_lyrics_sync_offset_custom">Custom</string>
+    <string name="player_lyrics_sync_offset_milliseconds">Milliseconds</string>
+    <string name="player_lyrics_sync_offset_custom_range">From %1$d to %2$d ms</string>
+    <string name="player_show_lyrics_player_controls">Show player controls</string>
+    <string name="player_cancel">Cancel</string>
+    <string name="player_ok">OK</string>
+</resources>

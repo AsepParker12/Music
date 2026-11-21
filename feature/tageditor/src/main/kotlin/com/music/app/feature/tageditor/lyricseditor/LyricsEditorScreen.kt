@@ -1,0 +1,78 @@
+package com.music.app.feature.tageditor.lyricseditor
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleStartEffect
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.WindowBusyOverlay
+import com.music.app.core.designsystem.component.toast
+import com.music.app.core.navigation.LocalNavigator
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.tageditor.R
+import com.music.app.feature.tageditor.rememberTrackFileSave
+import com.music.app.core.designsystem.icon.MusicIcons
+
+/**
+ * The lyrics editor on its own, opened for the track [trackId] - see [LyricsEditor]. From the lyrics sheet it starts
+ * from the lyrics the file holds and saves them back into it - asking Android first where it must, as the tag editor
+ * does - then goes back to the sheet, which shows them at once. From the tag editor, where it [editsTagDraft], it
+ * starts from the draft's lyrics and Done keeps them there, to be saved with the tags. The playing track repeats
+ * while it is in front.
+ */
+data class LyricsEditorScreen(val trackId: Long, val editsTagDraft: Boolean = false) : Screen {
+
+    @Composable
+    override fun Content() {
+        val context = LocalContext.current
+        val navigator = LocalNavigator.current
+        val viewModel = hiltViewModel<LyricsEditorViewModel, LyricsEditorViewModel.Factory>(
+            creationCallback = { factory -> factory.create(trackId, editsTagDraft) },
+        )
+        val editor = viewModel.editor
+
+        // A tag editor closed meanwhile leaves nothing to keep the lyrics in.
+        LaunchedEffect(viewModel) { if (viewModel.isDraftGone) navigator.close() }
+
+        LifecycleStartEffect(viewModel) {
+            val release = viewModel.holdPlayingTrack()
+            onStopOrDispose { release() }
+        }
+        val requestSave = rememberTrackFileSave(
+            track = editor?.track,
+            outcome = viewModel.saveOutcome,
+            save = viewModel::save,
+            onSaved = {
+                if (!editsTagDraft) context.toast(context.getString(R.string.lyrics_editor_saved))
+                // Closed outright: going back would ask whether to leave the changes just saved.
+                navigator.close()
+            },
+            onOutcomeHandled = viewModel::onSaveOutcomeHandled,
+        )
+
+        if (editor == null) {
+            // A moment's read of the file: the bar is already where it will be.
+            MusicTopAppBar(title = stringResource(R.string.lyrics_editor_title), onNavigateBack = navigator::back)
+            return
+        }
+        LyricsEditor(
+            state = editor,
+            confirmAction = TopBarAction(
+                label = stringResource(if (editsTagDraft) R.string.lyrics_editor_done else R.string.tag_editor_save),
+                icon = MusicIcons.Check,
+                enabled = editor.hasChanges && !viewModel.isSaving,
+            ) {
+                // A draft's lyrics reach no file here, so there is nothing to ask Android first.
+                if (editsTagDraft) viewModel.save() else requestSave()
+            },
+            onLeave = navigator::close,
+        )
+        // The whole window held while the file is written, and back with it, so the save is never left halfway.
+        WindowBusyOverlay(isBusy = viewModel.isSaving)
+        BackHandler(enabled = viewModel.isSaving) {}
+    }
+}
