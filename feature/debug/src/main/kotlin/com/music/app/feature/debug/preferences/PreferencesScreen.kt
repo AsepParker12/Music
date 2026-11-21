@@ -1,0 +1,168 @@
+package com.music.app.feature.debug.preferences
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.music.app.core.designsystem.component.LocalBottomContentPadding
+import com.music.app.core.designsystem.component.LocalDragSelection
+import com.music.app.core.designsystem.component.MusicListRow
+import com.music.app.core.designsystem.component.TopBarAction
+import com.music.app.core.designsystem.component.actionButton
+import com.music.app.core.designsystem.component.dialog.MusicDialog
+import com.music.app.core.designsystem.component.dragSelection
+import com.music.app.core.designsystem.component.fastscroll.FastScroller
+import com.music.app.core.designsystem.component.rememberDragSelection
+import com.music.app.core.designsystem.component.rememberSelectionState
+import com.music.app.core.designsystem.component.section.rememberSectionListState
+import com.music.app.core.designsystem.component.section.section
+import com.music.app.core.navigation.Screen
+import com.music.app.feature.debug.DebugRowIcon
+import com.music.app.feature.debug.DebugSelectionBar
+import com.music.app.feature.debug.DebugViewModel
+import com.music.app.feature.debug.DeleteConfirmation
+import com.music.app.feature.debug.Loaded
+import com.music.app.feature.debug.Message
+import com.music.app.feature.debug.rememberLoaded
+import kotlinx.coroutines.launch
+import com.music.app.core.designsystem.icon.MusicIcons
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.KeyboardOptions
+
+private fun sectionKeyOf(file: PreferenceFile) = "${file.kind}:${file.name}"
+
+/** A value of a file, as a row of this screen selects and opens it. */
+private data class PreferenceValue(val file: PreferenceFile, val key: String, val value: Any)
+
+/**
+ * Every key-value file, a section of its own: a value opened can be changed, and values selected - a whole file's, with
+ * its section's button - removed, so each goes back to its default. What a folded section holds is out of any selection.
+ */
+data object PreferencesScreen : Screen {
+
+    @Composable
+    override fun Content() {
+        val inspector = hiltViewModel<DebugViewModel>().preferences
+        val selection = rememberSelectionState()
+        val sections = rememberSectionListState()
+        val listState = rememberLazyListState()
+        var version by remember { mutableIntStateOf(0) }
+        var editing by remember { mutableStateOf<PreferenceValue?>(null) }
+        var isConfirmingDelete by remember { mutableStateOf(false) }
+        val files = rememberLoaded(version) { inspector.files() }
+        val values = remember(files) {
+            files?.getOrNull().orEmpty().flatMap { file -> file.values.toSortedMap().map { (key, value) -> PreferenceValue(file, key, value) } }
+        }
+        val shownValues = remember(values, sections.collapsedKeys) { values.filterNot { sections.isCollapsed(sectionKeyOf(it.file)) } }
+        val dragSelection = rememberDragSelection(selection, listState, shownValues)
+
+        Column(Modifier.fillMaxSize()) {
+            DebugSelectionBar(
+                title = "Preferences",
+                selection = selection,
+                selectableKeys = shownValues,
+                onDelete = { isConfirmingDelete = true },
+            )
+            Loaded(files) { loaded ->
+                CompositionLocalProvider(LocalDragSelection provides dragSelection) {
+                    FastScroller(listState, Modifier.fillMaxSize()) { overscrollEffect ->
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize().dragSelection(dragSelection),
+                            contentPadding = PaddingValues(bottom = LocalBottomContentPadding.current),
+                            overscrollEffect = overscrollEffect,
+                        ) {
+                            loaded.forEachIndexed { index, file ->
+                                val fileValues = values.filter { it.file == file }
+                                section(
+                                    key = sectionKeyOf(file),
+                                    title = "${file.kind.label}: ${file.name} (${file.values.size})",
+                                    state = sections,
+                                    actions = listOf(TopBarAction(label = "Select this file", icon = MusicIcons.SelectAll) { selection.selectAll(fileValues) }),
+                                    hasDividerAbove = index > 0,
+                                ) {
+                                    items(fileValues, key = { "${sectionKeyOf(file)}:${it.key}" }) { item ->
+                                        MusicListRow(
+                                            title = item.key,
+                                            subtitle = "${item.value::class.simpleName}: ${preferenceText(item.value)}",
+                                            selection = selection,
+                                            selectionKey = item,
+                                            onClick = { editing = item },
+                                            onOpenOptions = null,
+                                            cover = { isSelected -> DebugRowIcon(MusicIcons.Tune, isSelected) },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        editing?.let { item ->
+            ValueDialog(
+                item = item,
+                onSave = { text -> inspector.set(item.file, item.key, item.value, text) },
+                onDismiss = { editing = null },
+                onSaved = {
+                    editing = null
+                    version++
+                },
+            )
+        }
+        if (isConfirmingDelete) {
+            DeleteConfirmation(
+                what = "${selection.count} values",
+                onDismiss = { isConfirmingDelete = false },
+                delete = {
+                    selection.selectedKeys.filterIsInstance<PreferenceValue>().forEach { inspector.remove(it.file, it.key) }
+                    selection.clear()
+                    version++
+                },
+            )
+        }
+    }
+
+    @Composable
+    private fun ValueDialog(item: PreferenceValue, onSave: suspend (String) -> Unit, onDismiss: () -> Unit, onSaved: () -> Unit) {
+        val scope = rememberCoroutineScope()
+        val text = remember(item) { TextFieldState(preferenceText(item.value)) }
+        var failure by remember(item) { mutableStateOf<String?>(null) }
+
+        MusicDialog(
+            onDismissRequest = onDismiss,
+            title = item.key,
+            buttons = {
+                actionButton(label = "Cancel", onClick = onDismiss)
+                actionButton(
+                    label = "Save",
+                    onClick = { scope.launch { runCatching { onSave(text.text.toString()) }.onSuccess { onSaved() }.onFailure { failure = it.toString() } } },
+                )
+            },
+        ) {
+            failure?.let { Message(it) }
+            OutlinedTextField(
+                state = text,
+                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false),
+                label = { Text(item.value::class.simpleName.orEmpty()) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}

@@ -1,0 +1,24 @@
+package com.music.app.core.model
+
+/**
+ * A user-ordered list of tracks - music, videos, or both.
+ *
+ * [isBuiltIn] is Favorites: it appears first and cannot be renamed or deleted, but is otherwise an
+ * ordinary playlist - it takes folders, exports to M3U, reorders by dragging and takes a cover like any other.
+ */
+data class Playlist(
+    val id: Long,
+    val name: String,
+    val isBuiltIn: Boolean,
+    /** Every track it holds, its videos among them. */
+    val trackCount: Int,
+    /** How many of [trackCount] are videos. */
+    val videoCount: Int,
+    /** What the cover was chosen to show. */
+    val cover: PlaylistCover,
+    /**
+     * What its cover is drawn from: the one image [cover] names, or - stacked, or with nothing to show
+     * for the choice - every distinct cover among the playlist's tracks, the most shared first.
+     */
+    val coverArtUris: List<String>,
+)

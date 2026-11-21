@@ -1,0 +1,232 @@
+package com.music.app.core.designsystem.theme
+
+import android.content.Context
+import android.os.Build
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.LocalActivity
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MotionScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalContext
+import com.music.app.core.model.FastScrollTouchArea
+import com.music.app.core.model.ThemeMode
+
+private const val ThemeTransitionDurationMillis = 350
+
+/**
+ * Music's Material3 theme, drawn from a [ThemeConfig] - light or dark, its colours, black surfaces and
+ * its typeface - as ArchiveTune's `ArchiveTuneTheme` draws its preferences.
+ *
+ * This composable only draws the config - it does not know about playback, artwork or settings. The app
+ * layer works the config out, the playing cover's colour included, and hands it down here.
+ *
+ * Every change of scheme - a new cover, a new palette, light and dark - is animated by
+ * [animateColorSchemeAsState], so the whole app moves between schemes as one.
+ *
+ * [coverStyle] is provided alongside the colours, so every cover in the app is drawn the same way,
+ * and [fastScrollTouchArea] so every list's fast scroller grabs its thumb the same way. The round mode
+ * [coverStyle] carries cuts every shape in the app, not only covers - see [LocalIsRounded].
+ */
+@Composable
+fun MusicTheme(
+    config: ThemeConfig,
+    coverStyle: CoverStyle,
+    fastScrollTouchArea: FastScrollTouchArea,
+    content: @Composable () -> Unit,
+) {
+    val context = LocalContext.current
+    val darkTheme = config.isDark(isSystemDark = isSystemInDarkTheme())
+
+    // Generated once per change rather than once per frame: an HCT scheme is dozens of tone solves,
+    // and the transition below only ever needs its two ends.
+    val targetColorScheme = remember(config.colors, config.pureBlack, darkTheme) { config.colorScheme(context, darkTheme) }
+
+    SystemBarsFollowing(darkTheme)
+
+    // Round mode reaches every shape from here: Material's through the theme, Music's own through
+    // [LocalIsRounded] - see `MusicShapes`. Everything moves on Material 3 Expressive's springs, which overshoot and
+    // settle: Material's own components - switches, sliders, sheets, button groups, menus - and every one of the app's
+    // that reads [MaterialTheme.motionScheme].
+    MaterialTheme(
+        colorScheme = animateColorSchemeAsState(targetColorScheme),
+        motionScheme = MotionScheme.expressive(),
+        shapes = if (coverStyle.isRounded) MaterialTheme.shapes else SquareShapes,
+        typography = rememberTypography(config.font, config.customFontFamily),
+    ) {
+        CompositionLocalProvider(
+            LocalIsRounded provides coverStyle.isRounded,
+            LocalCoverStyle provides coverStyle,
+            LocalFastScrollTouchArea provides fastScrollTouchArea,
+            content = content,
+        )
+    }
+}
+
+/** Whether this config draws the app dark, the system being dark or not - [isSystemDark]. */
+fun ThemeConfig.isDark(isSystemDark: Boolean): Boolean = when (mode) {
+    ThemeMode.SYSTEM -> isSystemDark
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+}
+
+/**
+ * The colour scheme this config draws the app in, [isDark] or not - what [MusicTheme] moves to, and what the home
+ * screen widgets are drawn in, so they are always in the app's own colours.
+ */
+fun ThemeConfig.colorScheme(context: Context, isDark: Boolean): ColorScheme {
+    val scheme = when (colors) {
+        ThemeColors.Wallpaper ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            } else {
+                materialKolorDynamicColorScheme(seedColor = DefaultThemeColor, isDark = isDark)
+            }
+        is ThemeColors.Seed -> materialKolorDynamicColorScheme(seedColor = colors.color, isDark = isDark)
+        is ThemeColors.Palette -> paletteColorScheme(seeds = colors.seeds, isDark = isDark)
+    }
+    // Every bar, row and sheet is `surface`, while a Scaffold - and any screen that paints nothing
+    // itself - shows `background`. The two match on most devices but not all, and where they differ
+    // content sits in bands of another shade. One colour for both, here, keeps every screen whole.
+    return if (isDark && pureBlack) {
+        scheme.copy(surface = Color.Black, background = Color.Black, onBackground = scheme.onSurface)
+    } else {
+        scheme.copy(background = scheme.surface, onBackground = scheme.onSurface)
+    }
+}
+
+/**
+ * [content] moving on Material's expressive springs - which overshoot and settle - as [MusicTheme] has it, for content
+ * that may be drawn outside it: whatever inside reads [MaterialTheme.motionScheme], Material's own components included.
+ */
+@Composable
+fun ExpressiveMotion(content: @Composable () -> Unit) {
+    MaterialTheme(motionScheme = MotionScheme.expressive(), content = content)
+}
+
+/** The two schemes a transition runs between, and how far along it is. */
+private class ColorSchemeTransition(initial: ColorScheme) {
+    var from by mutableStateOf(initial)
+    var to by mutableStateOf(initial)
+    val progress = Animatable(1f)
+
+    val current: ColorScheme
+        get() = if (progress.value == 1f) to else from.lerp(to, progress.value)
+}
+
+/**
+ * [target], reached by a transition from the scheme on screen rather than applied at once.
+ *
+ * One progress value drives every role, so no colour can lead or trail another: whatever reads the
+ * theme - a bar, a card, a row - is on the same frame of the same transition. A target that changes
+ * mid-transition starts the next one from the colours on screen at that moment, so nothing jumps. The
+ * first scheme is applied as it is: there is nothing on screen yet to move from.
+ */
+@Composable
+private fun animateColorSchemeAsState(target: ColorScheme): ColorScheme {
+    val transition = remember { ColorSchemeTransition(target) }
+    LaunchedEffect(target) {
+        if (target === transition.to) return@LaunchedEffect
+        transition.from = transition.current
+        transition.to = target
+        transition.progress.snapTo(0f)
+        transition.progress.animateTo(1f, tween(durationMillis = ThemeTransitionDurationMillis))
+    }
+    return transition.current
+}
+
+private fun ColorScheme.lerp(to: ColorScheme, fraction: Float) = ColorScheme(
+    primary = lerp(primary, to.primary, fraction),
+    onPrimary = lerp(onPrimary, to.onPrimary, fraction),
+    primaryContainer = lerp(primaryContainer, to.primaryContainer, fraction),
+    onPrimaryContainer = lerp(onPrimaryContainer, to.onPrimaryContainer, fraction),
+    inversePrimary = lerp(inversePrimary, to.inversePrimary, fraction),
+    secondary = lerp(secondary, to.secondary, fraction),
+    onSecondary = lerp(onSecondary, to.onSecondary, fraction),
+    secondaryContainer = lerp(secondaryContainer, to.secondaryContainer, fraction),
+    onSecondaryContainer = lerp(onSecondaryContainer, to.onSecondaryContainer, fraction),
+    tertiary = lerp(tertiary, to.tertiary, fraction),
+    onTertiary = lerp(onTertiary, to.onTertiary, fraction),
+    tertiaryContainer = lerp(tertiaryContainer, to.tertiaryContainer, fraction),
+    onTertiaryContainer = lerp(onTertiaryContainer, to.onTertiaryContainer, fraction),
+    background = lerp(background, to.background, fraction),
+    onBackground = lerp(onBackground, to.onBackground, fraction),
+    surface = lerp(surface, to.surface, fraction),
+    onSurface = lerp(onSurface, to.onSurface, fraction),
+    surfaceVariant = lerp(surfaceVariant, to.surfaceVariant, fraction),
+    onSurfaceVariant = lerp(onSurfaceVariant, to.onSurfaceVariant, fraction),
+    surfaceTint = lerp(surfaceTint, to.surfaceTint, fraction),
+    inverseSurface = lerp(inverseSurface, to.inverseSurface, fraction),
+    inverseOnSurface = lerp(inverseOnSurface, to.inverseOnSurface, fraction),
+    error = lerp(error, to.error, fraction),
+    onError = lerp(onError, to.onError, fraction),
+    errorContainer = lerp(errorContainer, to.errorContainer, fraction),
+    onErrorContainer = lerp(onErrorContainer, to.onErrorContainer, fraction),
+    outline = lerp(outline, to.outline, fraction),
+    outlineVariant = lerp(outlineVariant, to.outlineVariant, fraction),
+    scrim = lerp(scrim, to.scrim, fraction),
+    surfaceBright = lerp(surfaceBright, to.surfaceBright, fraction),
+    surfaceContainer = lerp(surfaceContainer, to.surfaceContainer, fraction),
+    surfaceContainerHigh = lerp(surfaceContainerHigh, to.surfaceContainerHigh, fraction),
+    surfaceContainerHighest = lerp(surfaceContainerHighest, to.surfaceContainerHighest, fraction),
+    surfaceContainerLow = lerp(surfaceContainerLow, to.surfaceContainerLow, fraction),
+    surfaceContainerLowest = lerp(surfaceContainerLowest, to.surfaceContainerLowest, fraction),
+    surfaceDim = lerp(surfaceDim, to.surfaceDim, fraction),
+    primaryFixed = lerp(primaryFixed, to.primaryFixed, fraction),
+    primaryFixedDim = lerp(primaryFixedDim, to.primaryFixedDim, fraction),
+    onPrimaryFixed = lerp(onPrimaryFixed, to.onPrimaryFixed, fraction),
+    onPrimaryFixedVariant = lerp(onPrimaryFixedVariant, to.onPrimaryFixedVariant, fraction),
+    secondaryFixed = lerp(secondaryFixed, to.secondaryFixed, fraction),
+    secondaryFixedDim = lerp(secondaryFixedDim, to.secondaryFixedDim, fraction),
+    onSecondaryFixed = lerp(onSecondaryFixed, to.onSecondaryFixed, fraction),
+    onSecondaryFixedVariant = lerp(onSecondaryFixedVariant, to.onSecondaryFixedVariant, fraction),
+    tertiaryFixed = lerp(tertiaryFixed, to.tertiaryFixed, fraction),
+    tertiaryFixedDim = lerp(tertiaryFixedDim, to.tertiaryFixedDim, fraction),
+    onTertiaryFixed = lerp(onTertiaryFixed, to.onTertiaryFixed, fraction),
+    onTertiaryFixedVariant = lerp(onTertiaryFixedVariant, to.onTertiaryFixedVariant, fraction),
+)
+
+/** The platform's own navigation bar scrims - `ComponentActivity`'s defaults - over 3-button navigation. */
+private val LightNavigationBarScrim = android.graphics.Color.argb(0xe6, 0xFF, 0xFF, 0xFF)
+private val DarkNavigationBarScrim = android.graphics.Color.argb(0x80, 0x1b, 0x1b, 0x1b)
+
+/**
+ * Draws the system bars' icons for [darkTheme]: dark over a light theme, light over a dark one.
+ *
+ * The screens are drawn behind the bars (`MusicActivity`), so it is the theme drawn there, not the
+ * window's, that the icons have to read against - and [darkTheme] is what decides that theme. Left to
+ * the window, the bars followed its own idea of light and dark instead, which could leave icons the
+ * same colour as the screen behind them. The status bar stays clear; over 3-button navigation the
+ * navigation bar keeps the platform's translucent scrim, in the theme's tone, and gesture navigation
+ * stays clear.
+ */
+@Composable
+private fun SystemBarsFollowing(darkTheme: Boolean) {
+    val activity = LocalActivity.current as? ComponentActivity ?: return
+    DisposableEffect(activity, darkTheme) {
+        activity.enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT,
+            ) { darkTheme },
+            navigationBarStyle = SystemBarStyle.auto(LightNavigationBarScrim, DarkNavigationBarScrim) { darkTheme },
+        )
+        onDispose {}
+    }
+}

@@ -1,0 +1,218 @@
+package com.music.app.core.designsystem.theme
+
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.shape.CornerSize
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroupDefaults
+import androidx.compose.material3.ButtonShapes
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.IconButtonShapes
+import androidx.compose.material3.IconToggleButtonShapes
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ToggleButtonShapes
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.toRect
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
+
+/**
+ * The keylines, corners, gaps and press response every component in Music shares.
+ *
+ * Covers, cards, tabs and buttons all read their look from here, so tuning a value moves every one of
+ * them together and no component can drift from the rest.
+ */
+object MusicComponentStyle {
+
+    /**
+     * The keyline every section of a screen starts and ends on - bar, cards, tabs and rows alike.
+     * An icon aligns by its glyph rather than its touch target, which is what the eye lines up.
+     */
+    val ContentHorizontalPadding = 16.dp
+
+    /**
+     * The corners everything rests with: Material's medium corner - and what a control that is on squares to, a pill at
+     * rest, while it is on: less square than a press, which tightens it further still.
+     */
+    val CornerRadius = 12.dp
+
+    /**
+     * The corners everything tightens to while held, the way an expressive button's corners answer a
+     * press: Material's extra-small corner, what its connected button groups press to. The one value
+     * every press in the app morphs to - buttons, icon buttons, the FAB, tabs, shortcuts and connected
+     * groups alike - so tuning it retunes all of them.
+     */
+    val PressedCornerRadius = 8.dp
+
+    /** The gap between neighbouring items in a row. */
+    val ItemSpacing = 8.dp
+
+    /** How much wider a held item grows within its row, as a share of its width. Its neighbours give it up. */
+    const val PressedExpandedRatio = 0.12f
+}
+
+/**
+ * The side of its container a control stands against - the end of the mini player, of a field, of a prompt's pill - as
+ * the first and the last of a connected group stand against the group's ends. Its corners on that side are the
+ * container's own and keep their roundness through a press, so the two stay concentric: only the side facing in tightens
+ * - Material 3 Expressive's press, for a control at an edge.
+ */
+enum class ContainerEdge { Start, End }
+
+/**
+ * The shapes every labelled button presses with: a pill at rest, tightening to
+ * [MusicComponentStyle.PressedCornerRadius] while held - square throughout while round mode is off. At a container's
+ * [edge], that side stays round - see [ContainerEdge].
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun buttonPressShapes(edge: ContainerEdge? = null): ButtonShapes =
+    ButtonDefaults.shapes(shape = pillShape, pressedShape = cornersAt(edge, PressedCorner))
+
+/** The shapes every icon button presses with - see [buttonPressShapes]. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun iconButtonPressShapes(edge: ContainerEdge? = null): IconButtonShapes =
+    IconButtonDefaults.shapes(shape = pillShape, pressedShape = cornersAt(edge, PressedCorner))
+
+/**
+ * The shapes every icon toggle presses with: a pill while off, squaring to [MusicComponentStyle.CornerRadius] while on,
+ * and tightening to [MusicComponentStyle.PressedCornerRadius] while held either way - but at a container's [edge], see
+ * [ContainerEdge].
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun iconTogglePressShapes(edge: ContainerEdge? = null): IconToggleButtonShapes =
+    IconButtonDefaults.toggleableShapes(
+        shape = pillShape,
+        pressedShape = cornersAt(edge, PressedCorner),
+        checkedShape = cornersAt(edge, CornerSize(MusicComponentStyle.CornerRadius)),
+    )
+
+/** The shapes every labelled toggle presses with - see [iconTogglePressShapes]. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun togglePressShapes(): ToggleButtonShapes =
+    ToggleButtonShapes(
+        shape = pillShape,
+        pressedShape = roundedShape(MusicComponentStyle.PressedCornerRadius),
+        checkedShape = roundedShape(MusicComponentStyle.CornerRadius),
+    )
+
+/**
+ * The shapes a button between the first and the last of a connected group presses with: Material's own - its corners small
+ * while it is not picked, round once it is, and tightening to [MusicComponentStyle.PressedCornerRadius] while held - square
+ * while round mode is off.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun connectedMiddleButtonPressShapes(): ToggleButtonShapes =
+    if (!LocalIsRounded.current) {
+        SquareToggleButtonShapes
+    } else {
+        ButtonGroupDefaults.connectedMiddleButtonShapes(pressedShape = RoundedCornerShape(PressedCorner))
+    }
+
+/**
+ * The shapes the first button of a connected group presses with: Material's own, its inner corners
+ * tightening to [MusicComponentStyle.PressedCornerRadius] while held. Its outer corners stay round - and
+ * the whole button square while round mode is off.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun connectedLeadingButtonPressShapes(): ToggleButtonShapes =
+    if (!LocalIsRounded.current) {
+        SquareToggleButtonShapes
+    } else {
+        ButtonGroupDefaults.connectedLeadingButtonShapes(pressedShape = edgeShape(ContainerEdge.Start, PressedCorner))
+    }
+
+/** The last button of a connected group's shapes - see [connectedLeadingButtonPressShapes]. */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun connectedTrailingButtonPressShapes(): ToggleButtonShapes =
+    if (!LocalIsRounded.current) {
+        SquareToggleButtonShapes
+    } else {
+        ButtonGroupDefaults.connectedTrailingButtonShapes(pressedShape = edgeShape(ContainerEdge.End, PressedCorner))
+    }
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+private val SquareToggleButtonShapes = ToggleButtonShapes(
+    shape = SquareShape,
+    pressedShape = SquareShape,
+    checkedShape = SquareShape,
+)
+
+private val FullCorner = CornerSize(50)
+private val PressedCorner = CornerSize(MusicComponentStyle.PressedCornerRadius)
+
+/** [inner] corners all round - or, at a container's [edge], on the side facing in alone - square while round mode is off. */
+@Composable
+private fun cornersAt(edge: ContainerEdge?, inner: CornerSize): Shape = when {
+    !LocalIsRounded.current -> SquareShape
+    edge == null -> RoundedCornerShape(inner)
+    else -> edgeShape(edge, inner)
+}
+
+/** Round on the side against a container's [edge], [inner] on the side facing in - see [ContainerEdge]. */
+private fun edgeShape(edge: ContainerEdge, inner: CornerSize): Shape = when (edge) {
+    ContainerEdge.Start -> RoundedCornerShape(topStart = FullCorner, bottomStart = FullCorner, topEnd = inner, bottomEnd = inner)
+    ContainerEdge.End -> RoundedCornerShape(topStart = inner, bottomStart = inner, topEnd = FullCorner, bottomEnd = FullCorner)
+}
+
+/**
+ * The corners of something [pressFraction] of the way from [restingRadius] to fully held - for a
+ * component that draws its own shape rather than taking Material's pressed one.
+ */
+fun pressedCornerRadius(pressFraction: Float, restingRadius: Dp = MusicComponentStyle.CornerRadius): Dp =
+    lerp(restingRadius, MusicComponentStyle.PressedCornerRadius, pressFraction)
+
+/**
+ * How held [interactionSource] is, from 0 at rest to 1 fully pressed, on the same motion Material's own
+ * buttons morph with - so a custom component and a Material one answer a press identically.
+ */
+@Composable
+fun rememberPressFraction(interactionSource: InteractionSource): State<Float> {
+    val isPressed by interactionSource.collectIsPressedAsState()
+    return animateFloatAsState(
+        targetValue = if (isPressed) 1f else 0f,
+        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "pressFraction",
+    )
+}
+
+/**
+ * Clips what follows to a pill that tightens to [MusicComponentStyle.PressedCornerRadius] while [interactionSource] is
+ * held, on the motion every button presses with - an expressive button's press, for something pressable that is not a
+ * button: a row of text. Square throughout while round mode is off.
+ */
+@Composable
+fun Modifier.pressMorphingClip(interactionSource: InteractionSource): Modifier {
+    val pressFraction by rememberPressFraction(interactionSource)
+    return clip(PressMorphingShape(pressFraction, MusicComponentStyle.PressedCornerRadius, LocalIsRounded.current))
+}
+
+/** A pill [pressFraction] of the way to corners of [pressedRadius] - whatever its size - or a square, not [isRounded]. */
+private data class PressMorphingShape(val pressFraction: Float, val pressedRadius: Dp, val isRounded: Boolean) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        if (!isRounded) return Outline.Rectangle(size.toRect())
+        val radius = androidx.compose.ui.util.lerp(size.minDimension / 2f, with(density) { pressedRadius.toPx() }, pressFraction)
+        return Outline.Rounded(RoundRect(size.toRect(), CornerRadius(radius)))
+    }
+}

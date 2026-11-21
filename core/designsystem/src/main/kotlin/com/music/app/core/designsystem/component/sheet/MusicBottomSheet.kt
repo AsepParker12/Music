@@ -1,0 +1,193 @@
+package com.music.app.core.designsystem.component.sheet
+
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.music.app.core.designsystem.component.LocalBottomContentPadding
+import com.music.app.core.designsystem.effect.ProvideMusicHaptics
+import kotlinx.coroutines.launch
+
+/** What a sheet's content can do to the sheet it sits in. */
+@Stable
+class MusicBottomSheetScope internal constructor(private val dismissAnimated: () -> Unit) {
+
+    /** Slides the sheet away, then reports it dismissed - how a button inside the sheet closes it. */
+    fun dismiss() = dismissAnimated()
+}
+
+/**
+ * The bottom sheet every screen opens: a drag handle, a title, then whatever the caller puts beneath.
+ *
+ * Closing from inside - Cancel, or a button that confirms - goes through [MusicBottomSheetScope.dismiss],
+ * which lets the sheet slide away before [onDismissRequest] removes it; removing it straight away would
+ * cut it off the screen mid-frame. It opens fully rather than half-way, because these sheets are short
+ * and a half-open one hides the buttons at its bottom. The content scrolls beneath the title, so a sheet
+ * opened in landscape can still reach its last row.
+ */
+@Composable
+fun MusicBottomSheet(
+    title: String,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable MusicBottomSheetScope.() -> Unit,
+) {
+    MusicBottomSheet(
+        onDismissRequest = onDismissRequest,
+        modifier = modifier,
+        header = { SheetTitle(title) },
+        content = content,
+    )
+}
+
+/**
+ * The same sheet, with [header] standing in for the plain title - an options sheet's cover, type,
+ * name and info line, in place of a single line of text. The header stays put while the content
+ * beneath it scrolls.
+ */
+@Composable
+fun MusicBottomSheet(
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    header: @Composable () -> Unit,
+    content: @Composable MusicBottomSheetScope.() -> Unit,
+) {
+    SheetFrame(onDismissRequest, modifier) { sheetScope ->
+        header()
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            sheetScope.content()
+        }
+    }
+}
+
+/**
+ * The same sheet, laid out beneath its title by [content] itself - for one filled with lists and bars of its own,
+ * weighted as it likes: a folder picker's tabs, folders and buttons.
+ */
+@Composable
+fun MusicColumnBottomSheet(
+    title: String,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.(MusicBottomSheetScope) -> Unit,
+) {
+    MusicColumnBottomSheet(onDismissRequest = onDismissRequest, modifier = modifier, header = { SheetTitle(title) }, content = content)
+}
+
+/** The same sheet, with [header] standing in for the plain title - as [MusicBottomSheet]'s does. */
+@Composable
+fun MusicColumnBottomSheet(
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    header: @Composable () -> Unit,
+    content: @Composable ColumnScope.(MusicBottomSheetScope) -> Unit,
+) {
+    SheetFrame(onDismissRequest, modifier) { sheetScope ->
+        header()
+        content(sheetScope)
+    }
+}
+
+/**
+ * The same sheet for a list that can run long - a queue, say: the rows are a lazy list, so only those in view
+ * are drawn, however many there are. [listState] places it - opened at the row that matters.
+ */
+@Composable
+fun MusicLazyBottomSheet(
+    title: String,
+    onDismissRequest: () -> Unit,
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState(),
+    content: LazyListScope.(MusicBottomSheetScope) -> Unit,
+) {
+    SheetFrame(onDismissRequest, modifier) { sheetScope ->
+        SheetTitle(title)
+        LazyColumn(state = listState) { content(sheetScope) }
+    }
+}
+
+/** A sheet's title, as every sheet's stands - for a header of its own that only adds to it: [modifier], a long press's. */
+@Composable
+fun SheetTitle(title: String, modifier: Modifier = Modifier) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleLarge,
+        // A title is what the sheet is about - a page's, a link's - never all of a long one: two lines, then cut short.
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
+    )
+}
+
+/**
+ * The modal sheet every variant is: opened fully, closed animated from inside, with its own window's haptics.
+ *
+ * Its height never changes while it is dragged. Material's own top inset is the status bar less however far
+ * the sheet has been dragged down, so a sheet whose content reaches the status bar would grow and shrink
+ * with every pixel of a drag - and, with its height, the place it rests at - pulling itself back under the
+ * finger instead of following it. Only a list longer than the screen by more than the status bar hid that.
+ * The content is held below the status bar by a gap fixed at the bar's height instead.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun SheetFrame(
+    onDismissRequest: () -> Unit,
+    modifier: Modifier,
+    content: @Composable ColumnScope.(MusicBottomSheetScope) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val coroutineScope = rememberCoroutineScope()
+    val latestOnDismissRequest by rememberUpdatedState(onDismissRequest)
+    val sheetScope = remember(sheetState, coroutineScope) {
+        MusicBottomSheetScope {
+            coroutineScope.launch { sheetState.hide() }.invokeOnCompletion { latestOnDismissRequest() }
+        }
+    }
+    val statusBarGap = with(LocalDensity.current) { WindowInsets.safeDrawing.getTop(this).toDp() }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismissRequest,
+        modifier = modifier.padding(top = statusBarGap),
+        sheetState = sheetState,
+        contentWindowInsets = { WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom) },
+    ) {
+        // Its own window, with its own haptics: gated as every window's are. Nothing is laid over it - it stands above the
+        // mini player and the screen's FABs - so a list in it ends at its own foot, with none of the screen's room kept.
+        ProvideMusicHaptics {
+            CompositionLocalProvider(LocalBottomContentPadding provides 0.dp) {
+                // Every sheet grows and shrinks to what it holds rather than jumping to it: a row added, an option switched. The one
+                // size animation in a sheet - what changes inside it fades, see SheetReveal and SheetSwap, and leaves the size to this.
+                Column(modifier = Modifier.animateContentSize(MaterialTheme.motionScheme.defaultSpatialSpec())) {
+                    content(sheetScope)
+                }
+            }
+        }
+    }
+}

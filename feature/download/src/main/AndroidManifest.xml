@@ -1,0 +1,39 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <!-- Downloads run by WorkManager, in its own service - a data sync. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
+        <!-- Cancel, from a download's notification. -->
+        <receiver
+            android:name=".work.DownloadActionReceiver"
+            android:exported="false" />
+
+        <!--
+            "Quick download" in the share sheet, beside Music's own entry, which opens the download screen: a link shared
+            here is read in the download sheet, laid over the app it was shared from, and downloads from there.
+        -->
+        <activity
+            android:name="com.music.app.feature.download.QuickDownloadActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:label="@string/download_quick"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Music.Translucent">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

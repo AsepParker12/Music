@@ -1,0 +1,198 @@
+package com.music.app.feature.backup.library
+
+import com.music.app.core.database.entity.ReplayHeatmapEntity
+import java.util.Base64
+import com.music.app.core.database.entity.ArrangementEntity
+import com.music.app.core.database.entity.FavoriteCollectionEntity
+import com.music.app.core.database.entity.PlayStatsEntity
+import com.music.app.core.database.entity.PlaylistCoverSource
+import com.music.app.core.database.entity.PlaylistEntity
+import com.music.app.core.database.entity.PlaylistTrackEntity
+import com.music.app.core.database.entity.ResumePositionEntity
+import com.music.app.core.database.entity.VideoSubtitleEntity
+import com.music.app.core.model.sort.SortableList
+import com.music.app.core.model.withRenamedPlaylist
+import com.music.app.feature.backup.BackedUpPlaylist
+import com.music.app.feature.backup.BackupLibrary
+
+/** What the device's library already holds, as far as merging a backup into it needs to know. */
+data class LocalLibrary(
+    val playlists: List<PlaylistEntity>,
+    val arrangedLists: Set<Pair<SortableList, String>>,
+    val playStats: Map<Long, PlayStatsEntity>,
+    val resumePositionTrackIds: Set<Long>,
+    val videoSubtitleTrackIds: Set<Long> = emptySet(),
+    val replayHeatmapTrackIds: Set<Long> = emptySet(),
+)
+
+/** What a video has no subtitle settled on yet takes from a backup, with the backup's copy of its attached file, if any. */
+data class NewVideoSubtitle(
+    val subtitle: VideoSubtitleEntity,
+    val attachedFile: String?,
+)
+
+/**
+ * A cover a backup gives a playlist the device has already, still on its default - the built-in Favorites of a fresh
+ * install, say: its [source], the track it shows, and the backup's copy of its image, for one that is an image.
+ */
+data class PlaylistCover(
+    val playlistId: Long,
+    val source: PlaylistCoverSource,
+    val trackId: Long?,
+    val image: String?,
+)
+
+/** A playlist the device does not have, with the backup's copy of its cover image to give it, if any. */
+data class NewPlaylist(
+    val playlist: PlaylistEntity,
+    val coverImage: String?,
+)
+
+/**
+ * The rows a backup adds to the device's library - every one of them written as "keep what is there", so
+ * merging the same backup twice adds nothing the second time.
+ *
+ * @property playlistIds every backed-up playlist's id, to the id it has on this device.
+ * @property playlistsModifiedAt the device's playlists the backup also has, to the backup's last change of each.
+ */
+data class LibraryMergePlan(
+    val newPlaylists: List<NewPlaylist>,
+    val playlistTracks: List<PlaylistTrackEntity>,
+    val playlistsModifiedAt: Map<Long, Long>,
+    val favoriteCollections: List<FavoriteCollectionEntity>,
+    val arrangements: List<ArrangementEntity>,
+    val playStats: List<PlayStatsEntity>,
+    val resumePositions: List<ResumePositionEntity>,
+    val playlistIds: Map<Long, Long>,
+    val videoSubtitles: List<NewVideoSubtitle> = emptyList(),
+    val replayHeatmaps: List<ReplayHeatmapEntity> = emptyList(),
+    val playlistCovers: List<PlaylistCover> = emptyList(),
+)
+
+/**
+ * Merges [backup] into [local], deciding nothing by order of arrival - so it comes out the same however many
+ * times it runs:
+ * - a playlist is the device's one of the same name, or a new one, kept at its backed-up id where that is free;
+ *   its tracks are added to whichever, each keeping the date it was added first; the device's keeps its cover, unless
+ *   that is still the default, when it takes the backup's;
+ * - a favorite is added where it is not one already;
+ * - a list's hand-made order is the device's where it has one, else the backup's;
+ * - a play count is the higher of the two, and a last play the later - adding counts up would count the same
+ *   listens twice when a backup comes back to the device it was made on;
+ * - a resume position, what was settled on for a video's subtitles, or how often each moment of it was watched, is the
+ *   device's where it has one, else the backup's.
+ *
+ * Tracks are named in a backup by path; [trackIdOf] gives the id of the library track each now is, or null for
+ * one this device does not have, which is left out.
+ */
+fun planLibraryMerge(backup: BackupLibrary, local: LocalLibrary, trackIdOf: (String) -> Long?): LibraryMergePlan {
+    val localByName = local.playlists.associateBy { it.name }
+    val takenIds = local.playlists.mapTo(HashSet()) { it.id }
+    var nextFreeId = (takenIds + backup.playlists.map { it.id }).maxOrNull()?.plus(1) ?: 1L
+
+    val playlistIds = HashMap<Long, Long>()
+    val newPlaylists = mutableListOf<NewPlaylist>()
+    val playlistsModifiedAt = HashMap<Long, Long>()
+    val playlistCovers = mutableListOf<PlaylistCover>()
+    for (playlist in backup.playlists) {
+        val existing = localByName[playlist.name]
+        if (existing != null) {
+            playlistIds[playlist.id] = existing.id
+            playlistsModifiedAt[existing.id] = playlist.modifiedAt
+            if (existing.hasDefaultCover()) coverOf(playlist, existing.id, trackIdOf)?.let(playlistCovers::add)
+            continue
+        }
+        val id = if (takenIds.add(playlist.id)) playlist.id else nextFreeId++
+        playlistIds[playlist.id] = id
+        val hasImage = playlist.coverSource == PlaylistCoverSource.IMAGE && playlist.coverImage != null
+        newPlaylists += NewPlaylist(
+            playlist = PlaylistEntity(
+                id = id,
+                name = playlist.name,
+                isBuiltIn = playlist.isBuiltIn,
+                createdAt = playlist.createdAt,
+                modifiedAt = playlist.modifiedAt,
+                // Only with its image: one the backup could not carry falls back to the playlist's own tracks.
+                coverSource = if (playlist.coverSource == PlaylistCoverSource.IMAGE && !hasImage) PlaylistCoverSource.STACKED else playlist.coverSource,
+                coverTrackId = playlist.coverTrackPath?.let(trackIdOf),
+            ),
+            coverImage = playlist.coverImage.takeIf { hasImage },
+        )
+    }
+
+    val playlistTracks = backup.playlists.flatMap { playlist ->
+        playlist.tracks.mapNotNull { track ->
+            trackIdOf(track.path)?.let { PlaylistTrackEntity(playlistIds.getValue(playlist.id), it, track.addedAt) }
+        }
+    }
+
+    val arrangements = backup.arrangements
+        .groupBy { it.list to it.instanceId.renamedInstance(it.list, playlistIds) }
+        .filterKeys { it !in local.arrangedLists }
+        .flatMap { (list, rows) ->
+            rows.mapNotNull { row -> trackIdOf(row.path)?.let { ArrangementEntity(list.first, list.second, it, row.position) } }
+                .distinctBy { it.trackId }
+        }
+
+    val playStats = backup.playStats.mapNotNull { stats ->
+        val trackId = trackIdOf(stats.path) ?: return@mapNotNull null
+        val existing = local.playStats[trackId]
+        PlayStatsEntity(
+            trackId = trackId,
+            playCount = maxOf(stats.playCount, existing?.playCount ?: 0),
+            lastPlayedAt = maxOf(stats.lastPlayedAt, existing?.lastPlayedAt ?: 0L),
+        )
+    }.distinctBy { it.trackId }
+
+    val resumePositions = backup.resumePositions.mapNotNull { position ->
+        trackIdOf(position.path)?.takeIf { it !in local.resumePositionTrackIds }?.let { ResumePositionEntity(it, position.positionMs) }
+    }.distinctBy { it.trackId }
+
+    return LibraryMergePlan(
+        newPlaylists = newPlaylists,
+        playlistTracks = playlistTracks,
+        playlistsModifiedAt = playlistsModifiedAt,
+        favoriteCollections = backup.favoriteCollections.map {
+            FavoriteCollectionEntity(withRenamedPlaylist(it.collection, playlistIds), it.favoritedAt)
+        },
+        arrangements = arrangements,
+        playStats = playStats,
+        resumePositions = resumePositions,
+        playlistIds = playlistIds,
+        videoSubtitles = backup.videoSubtitles.mapNotNull { subtitle ->
+            trackIdOf(subtitle.path)?.takeIf { it !in local.videoSubtitleTrackIds }?.let { trackId ->
+                NewVideoSubtitle(
+                    subtitle = VideoSubtitleEntity(trackId, subtitle.attachedName, subtitle.offsetMs, subtitle.choice),
+                    attachedFile = subtitle.attachedFile,
+                )
+            }
+        }.distinctBy { it.subtitle.trackId },
+        replayHeatmaps = backup.replayHeatmaps.mapNotNull { heatmap ->
+            trackIdOf(heatmap.path)?.takeIf { it !in local.replayHeatmapTrackIds }
+                ?.let { ReplayHeatmapEntity(it, heatmap.durationMs, Base64.getDecoder().decode(heatmap.playedMs)) }
+        }.distinctBy { it.trackId },
+        playlistCovers = playlistCovers,
+    )
+}
+
+/** A playlist's hand-made order is kept under its id; any other list's under what it is named by. */
+private fun String.renamedInstance(list: SortableList, playlistIds: Map<Long, Long>): String =
+    if (list == SortableList.PLAYLIST_TRACKS) toLongOrNull()?.let(playlistIds::get)?.toString() ?: this else this
+
+/** Whether [this] still has the cover every playlist starts with: its tracks stacked, none picked, no image. */
+private fun PlaylistEntity.hasDefaultCover(): Boolean =
+    coverSource == PlaylistCoverSource.STACKED && coverTrackId == null && coverImageUri == null
+
+/**
+ * The cover [playlist] had, to give the device's [playlistId] - null where that is the default too, or one this device
+ * cannot show: a track it does not have, an image the backup did not carry.
+ */
+private fun coverOf(playlist: BackedUpPlaylist, playlistId: Long, trackIdOf: (String) -> Long?): PlaylistCover? {
+    val trackId = playlist.coverTrackPath?.let(trackIdOf)
+    return when (playlist.coverSource) {
+        PlaylistCoverSource.STACKED -> null
+        PlaylistCoverSource.IMAGE -> playlist.coverImage?.let { PlaylistCover(playlistId, PlaylistCoverSource.IMAGE, null, it) }
+        PlaylistCoverSource.TRACK -> trackId?.let { PlaylistCover(playlistId, PlaylistCoverSource.TRACK, it, null) }
+        PlaylistCoverSource.FIRST_TRACK, PlaylistCoverSource.LAST_TRACK -> PlaylistCover(playlistId, playlist.coverSource, trackId, null)
+    }
+}

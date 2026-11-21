@@ -1,0 +1,278 @@
+package com.music.app.core.downloader
+
+import com.music.app.core.model.AudioFormat
+import com.music.app.core.model.ClipRange
+import com.music.app.core.model.DownloadChoices
+import com.music.app.core.model.DownloadFailure
+import com.music.app.core.model.DownloadKind
+import com.music.app.core.model.DownloadOptions
+import com.music.app.core.model.DownloaderPreferences
+import com.music.app.core.model.SponsorSegment
+import com.music.app.core.model.SubtitleFormat
+import com.music.app.core.model.VideoFormat
+import com.music.app.core.model.VideoQuality
+import java.io.File
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class YtDlpArgumentsTest {
+
+    private fun List<String>.valueOf(option: String): String? = getOrNull(indexOf(option) + 1)?.takeIf { option in this }
+
+    private fun DownloadChoices.arguments(
+        captionLanguages: String? = null,
+        options: DownloadOptions = DownloadOptions(),
+        preferences: DownloaderPreferences = DownloaderPreferences(),
+        decodesAv1InHardware: Boolean = false,
+    ) = toArguments(options, preferences, captionLanguages, decodesAv1InHardware)
+
+    @Test
+    fun `a video's format prefers H264 for sharing, or AV1 where decoded in hardware and VP9 otherwise for quality`() {
+        val legacy = DownloadChoices(kind = DownloadKind.VIDEO, videoFormat = VideoFormat.LEGACY).arguments()
+        assertEquals("proto,vcodec:h264,ext,res:1080", legacy.valueOf("-S"))
+
+        val quality = DownloadChoices(kind = DownloadKind.VIDEO, videoFormat = VideoFormat.QUALITY)
+        assertEquals("vcodec:vp9.2,res:1080", quality.arguments().valueOf("-S"))
+        assertEquals("vcodec:av01,res:1080", quality.arguments(decodesAv1InHardware = true).valueOf("-S"))
+        assertEquals("ba+bv/bv*+ba/b", quality.arguments().valueOf("-f"))
+    }
+
+    @Test
+    fun `subtitles alone are written as SubRip, the video never fetched nor anything made of it`() {
+        val arguments = DownloadChoices(kind = DownloadKind.SUBTITLES, skipSponsors = true)
+            .arguments("fr,en", options = DownloadOptions(clip = ClipRange(5, 10), splitChapters = true))
+        assertTrue("--skip-download" in arguments)
+        assertTrue("--write-subs" in arguments && "--write-auto-subs" in arguments)
+        assertEquals("fr,en", arguments.valueOf("--sub-langs"))
+        assertEquals("srt", arguments.valueOf("--convert-subs"))
+        for (option in listOf("-f", "--embed-subs", "--embed-metadata", "--sponsorblock-remove", "--download-sections", "--split-chapters")) {
+            assertFalse(option, option in arguments)
+        }
+    }
+
+    @Test
+    fun `a video is kept at its quality, as mp4, with its captions and chapters`() {
+        val arguments = DownloadChoices(kind = DownloadKind.VIDEO, videoQuality = VideoQuality.P720, captions = true).arguments("fr,en")
+        assertEquals("vcodec:vp9.2,res:720", arguments.valueOf("-S"))
+        assertEquals("mp4", arguments.valueOf("--merge-output-format"))
+        assertEquals("fr,en", arguments.valueOf("--sub-langs"))
+        assertEquals("srt", arguments.valueOf("--convert-subs"))
+        assertTrue("--embed-subs" in arguments)
+        // Embedded, and not left beside the video as files.
+        assertEquals("no-keep-subs", arguments.valueOf("--compat-options"))
+        assertTrue("--embed-chapters" in arguments)
+        assertFalse("-x" in arguments)
+    }
+
+    @Test
+    fun `a sound asked for in another language is taken where the video has it, else the one recorded`() {
+        assertEquals("ba+bv/bv*+ba/b", DownloadChoices(kind = DownloadKind.VIDEO).arguments().valueOf("-f"))
+        assertEquals("ba[language=es]+bv/ba+bv/bv*+ba/b", DownloadChoices(kind = DownloadKind.VIDEO, audioLanguage = "es").arguments().valueOf("-f"))
+        assertEquals("ba[language=es]/ba/b", DownloadChoices(kind = DownloadKind.AUDIO, audioLanguage = "es").arguments().valueOf("-f"))
+    }
+
+    @Test
+    fun `further sounds are each a track of the video, which keeps its one sound where it lacks any`() {
+        val more = DownloadOptions(audioLanguages = listOf("fr", "de"))
+        val arguments = DownloadChoices(kind = DownloadKind.VIDEO, audioLanguage = "es").arguments(options = more)
+        assertEquals("ba[language=es]+ba[language=fr]+ba[language=de]+bv/ba[language=es]+bv/ba+bv/bv*+ba/b", arguments.valueOf("-f"))
+        assertTrue("--audio-multistreams" in arguments)
+        assertEquals("ba+ba[language=fr]+ba[language=de]+bv/ba+bv/bv*+ba/b", DownloadChoices(kind = DownloadKind.VIDEO).arguments(options = more).valueOf("-f"))
+        assertEquals("(137+140)+ba[language=fr]+ba[language=de]/137+140", DownloadChoices(kind = DownloadKind.VIDEO).arguments(options = more.copy(formatId = "137+140")).valueOf("-f"))
+        assertFalse("--audio-multistreams" in DownloadChoices(kind = DownloadKind.VIDEO).arguments())
+    }
+
+    @Test
+    fun `captions saved as files are written beside the video, and kept`() {
+        val arguments = DownloadChoices(kind = DownloadKind.VIDEO, subtitlesAsFile = true).arguments("en")
+        assertEquals("en", arguments.valueOf("--sub-langs"))
+        assertFalse("--embed-subs" in arguments)
+        assertNull(arguments.valueOf("--compat-options"))
+    }
+
+    @Test
+    fun `a read's sounds are told apart as yt-dlp marks them, and a song is downloaded in the one recorded`() {
+        fun sound(id: String, language: String, preference: Int, kbps: Int) =
+            """{"format_id":"$id","ext":"m4a","vcodec":"none","acodec":"mp4a","abr":$kbps,"url":"https://example.com/$id","protocol":"https","language":"$language","language_preference":$preference}"""
+        val read = org.json.JSONObject("""{"id":"v","title":"T","formats":[${sound("140-hi", "hi", -1, 130)},${sound("140-en", "en", 10, 128)},${sound("140-en-desc", "en-desc", -10, 128)}]}""")
+        val info = mediaInfoOf(read)
+        assertEquals(listOf(AudioTrack("en", AudioTrackKind.ORIGINAL), AudioTrack("hi", AudioTrackKind.DUBBED), AudioTrack("en-desc", AudioTrackKind.DESCRIPTIVE)), info.audioTracks)
+        val song = DownloadChoices(kind = DownloadKind.AUDIO, audioFormat = AudioFormat.ORIGINAL)
+        assertEquals("140-en", DirectTransfer().formatFor(info, song, DownloadOptions(), DownloaderPreferences())?.id)
+        assertEquals("140-hi", DirectTransfer().formatFor(info, song.copy(audioLanguage = "hi"), DownloadOptions(), DownloaderPreferences())?.id)
+        assertEquals("140-en", DirectTransfer().formatFor(info, song.copy(audioLanguage = "fr"), DownloadOptions(), DownloaderPreferences())?.id)
+    }
+
+    @Test
+    fun `the best video has no limit, and no captions where none are chosen`() {
+        val arguments = DownloadChoices(kind = DownloadKind.VIDEO, videoQuality = VideoQuality.BEST).arguments(captionLanguages = null)
+        assertEquals("vcodec:vp9.2", arguments.valueOf("-S"))
+        assertFalse("--write-subs" in arguments)
+    }
+
+    @Test
+    fun `a video carries its cover, as wide as it is`() {
+        val arguments = DownloadChoices(kind = DownloadKind.VIDEO).arguments()
+        assertTrue("--embed-thumbnail" in arguments)
+        assertNull(arguments.valueOf("--ppa"))
+    }
+
+    @Test
+    fun `a format picked replaces what the quality would pick`() {
+        val arguments = DownloadChoices(kind = DownloadKind.VIDEO, videoQuality = VideoQuality.P720).arguments(options = DownloadOptions(formatId = "137+ba/137"))
+        assertEquals("137+ba/137", arguments.valueOf("-f"))
+        assertNull(arguments.valueOf("-S"))
+    }
+
+    @Test
+    fun `audio is extracted with its cover, converted only when asked`() {
+        val original = DownloadChoices(kind = DownloadKind.AUDIO, audioFormat = AudioFormat.ORIGINAL).arguments()
+        assertTrue("-x" in original)
+        assertTrue("--embed-thumbnail" in original)
+        assertNull(original.valueOf("--audio-format"))
+        assertFalse("--write-subs" in original)
+
+        val mp3 = DownloadChoices(kind = DownloadKind.AUDIO, audioFormat = AudioFormat.MP3).arguments()
+        assertEquals("mp3", mp3.valueOf("--audio-format"))
+    }
+
+    @Test
+    fun `sponsors are cut only when asked, the parts the settings name`() {
+        assertFalse("--sponsorblock-remove" in DownloadChoices(skipSponsors = false).arguments())
+        val preferences = DownloaderPreferences(sponsorSegments = setOf(SponsorSegment.SPONSOR, SponsorSegment.INTRO))
+        assertEquals("sponsor,intro", DownloadChoices(skipSponsors = true).arguments(preferences = preferences).valueOf("--sponsorblock-remove"))
+    }
+
+    @Test
+    fun `captions are written as the settings say - their format, the speech's, and kept beside the video or not`() {
+        val video = DownloadChoices(kind = DownloadKind.VIDEO)
+        val default = video.arguments(captionLanguages = "en")
+        assertEquals("srt", default.valueOf("--convert-subs"))
+        assertTrue("--write-auto-subs" in default)
+        assertEquals("no-keep-subs", default.valueOf("--compat-options"))
+        val custom = video.arguments(
+            captionLanguages = "en",
+            preferences = DownloaderPreferences(subtitleFormat = SubtitleFormat.ORIGINAL, writesAutoSubtitles = false, keepsSubtitleFiles = true),
+        )
+        assertFalse("--convert-subs" in custom)
+        assertFalse("--write-auto-subs" in custom)
+        assertTrue("--embed-subs" in custom)
+        assertFalse("--compat-options" in custom)
+    }
+
+    @Test
+    fun `a proxy and a rate limit apply only while turned on, and are kept while off`() {
+        val off = DownloaderPreferences(proxy = "socks5://host:1080", rateLimit = "500K")
+        assertNull(off.activeProxy)
+        assertNull(off.activeRateLimit)
+        val on = off.copy(usesProxy = true, limitsRate = true)
+        assertEquals("socks5://host:1080", on.activeProxy)
+        assertEquals("500K", on.activeRateLimit)
+        assertNull(DownloaderPreferences(usesProxy = true, proxy = " ").activeProxy)
+    }
+
+    @Test
+    fun `the thumbnail is kept beside the file only when asked, and fragments come as many at once as set`() {
+        assertFalse("--write-thumbnail" in DownloadChoices().arguments())
+        val saving = DownloadChoices().arguments(preferences = DownloaderPreferences(savesThumbnail = true))
+        assertTrue("--write-thumbnail" in saving)
+        assertEquals("jpg", saving.valueOf("--convert-thumbnails"))
+        val download = downloadArguments("/out", "/tmp", "%(title)s.%(ext)s", splitsChapters = false, concurrentFragments = 16)
+        assertEquals("16", download.valueOf("--concurrent-fragments"))
+    }
+
+    @Test
+    fun `a clip downloads its stretch alone, and chapters split into files`() {
+        val arguments = DownloadChoices().arguments(options = DownloadOptions(clip = ClipRange(90, 165), splitChapters = true))
+        assertEquals("*90-165", arguments.valueOf("--download-sections"))
+        assertTrue("--split-chapters" in arguments)
+    }
+
+    @Test
+    fun `an item line names the video, and where it stands in a playlist`() {
+        assertEquals(DownloadEvent.Item("Song title", 2, 5), parseLine("${YtDlpLines.ITEM} 2 5 Song title"))
+        assertEquals(DownloadEvent.Item("One video", null, null), parseLine("${YtDlpLines.ITEM}   One video"))
+    }
+
+    @Test
+    fun `a log keeps yt-dlp's own words, its progress as it writes it untold, and none of Music's lines`() {
+        assertEquals(
+            "[download] 45.3% of 10.00MiB at 1.00MiB/s ETA 00:09",
+            logLineOf("${YtDlpLines.PROGRESS} 250 1000 50.5   45.3% of   10.00MiB at    1.00MiB/s ETA 00:09"),
+        )
+        assertEquals("[youtube] abc: Downloading webpage", logLineOf("[youtube] abc: Downloading webpage"))
+        assertNull(logLineOf("${YtDlpLines.ITEM} 2 5 Song title"))
+        assertNull(logLineOf("${YtDlpLines.SAVED} {}"))
+        assertNull(logLineOf("   "))
+    }
+
+    @Test
+    fun `a progress line is how far and how fast, nothing known where yt-dlp says NA`() {
+        val progress = parseLine("${YtDlpLines.PROGRESS} 250 1000 50.5") as DownloadEvent.Progress
+        assertEquals(0.25f, progress.fraction)
+        assertEquals(50L, progress.bytesPerSecond)
+        assertNull((parseLine("${YtDlpLines.PROGRESS} 250 NA NA") as DownloadEvent.Progress).fraction)
+    }
+
+    @Test
+    fun `a chapter's file is saved too`() {
+        assertEquals(
+            DownloadEvent.Saved(File("/sdcard/Download/Music/Video/01 - Intro.mp4"), null, null),
+            parseLine("[SplitChapters] Chapter 001; Destination: /sdcard/Download/Music/Video/01 - Intro.mp4"),
+        )
+    }
+
+    @Test
+    fun `anything else yt-dlp writes says nothing`() {
+        assertEquals(DownloadEvent.Part(File("video.f399.mp4.part"), File("video.f399.mp4")), parseLine("[download] Destination: video.f399.mp4"))
+        assertNull(parseLine("[download] Destination: video.en.vtt"))
+        assertEquals(DownloadEvent.Part(File("video.f251.webm.part"), File("video.f251.webm")), parseLine("[download] video.f251.webm has already been downloaded"))
+    }
+
+    @Test
+    fun `arguments split at spaces, outside quotes`() {
+        assertEquals(listOf("--embed-subs", "-o", "%(title)s [%(id)s].%(ext)s", "x"), splitArguments("""--embed-subs -o "%(title)s [%(id)s].%(ext)s" 'x'"""))
+        assertEquals(emptyList<String>(), splitArguments("   "))
+    }
+
+    @Test
+    fun `failures are told apart by what they say`() {
+        assertEquals(DownloadFailure.LOGIN_REQUIRED, failureOf(YtDlpException("Sign in to confirm you're not a bot")))
+        assertEquals(DownloadFailure.UNAVAILABLE, failureOf(YtDlpException("[youtube] abc: Video unavailable")))
+        assertEquals(DownloadFailure.NO_DOWNLOADER, failureOf(DownloaderMissingException()))
+        assertEquals(DownloadFailure.FAILED, failureOf(YtDlpException("Something else")))
+        assertTrue(isStaleRead(YtDlpException("HTTP Error 403: Forbidden")))
+    }
+
+    @Test
+    fun `a song is downloaded straight from its site only where nothing is to be assembled or converted`() {
+        val m4a = MediaFormat("140", "m4a", null, null, null, "mp4a.40.2", 129, 4_000_000, false, "https://example.com/a", emptyMap())
+        val video = MediaFormat("137", "mp4", 1080, 30, "avc1", null, 4000, null, true, "https://example.com/v", emptyMap())
+        val info = MediaInfo("id", "Song", "Artist", 200, null, "Youtube", listOf(m4a, video), null, null, null, null, null)
+        val transfer = DirectTransfer()
+        val audio = DownloadChoices(kind = DownloadKind.AUDIO, audioFormat = AudioFormat.ORIGINAL)
+        assertEquals(m4a, transfer.formatFor(info, audio, DownloadOptions(), DownloaderPreferences()))
+        assertNull(transfer.formatFor(info, audio.copy(audioFormat = AudioFormat.MP3), DownloadOptions(), DownloaderPreferences()))
+        assertNull(transfer.formatFor(info, audio.copy(skipSponsors = true), DownloadOptions(), DownloaderPreferences()))
+        assertNull(transfer.formatFor(info, audio, DownloadOptions(clip = ClipRange(0, 10)), DownloaderPreferences()))
+        assertNull(transfer.formatFor(info, DownloadChoices(kind = DownloadKind.VIDEO), DownloadOptions(), DownloaderPreferences()))
+    }
+
+    @Test
+    fun `a video is downloaded straight from its site only where one whole file is the best there is`() {
+        fun mp4(id: String, height: Int, hasAudio: Boolean) =
+            MediaFormat(id, "mp4", height, 30, "avc1", if (hasAudio) "mp4a" else null, height * 2, null, true, "https://example.com/$id", emptyMap())
+        val transfer = DirectTransfer()
+        val choices = DownloadChoices(kind = DownloadKind.VIDEO, videoQuality = VideoQuality.P1080)
+        // A post's video: every variant whole, with its sound - the tallest within the quality is taken.
+        val post = MediaInfo("p", "Post", null, 30, null, "Twitter", listOf(mp4("480", 480, true), mp4("720", 720, true), mp4("1440", 1440, true)), null, null, null, null, null)
+        assertEquals("720", transfer.formatFor(post, choices, DownloadOptions(), DownloaderPreferences())?.id)
+        // YouTube's: its whole file is the smallest, the rest pictures to merge - yt-dlp's to download.
+        val youTube = post.copy(formats = listOf(mp4("18", 360, true), mp4("137", 1080, false)))
+        assertNull(transfer.formatFor(youTube, choices, DownloadOptions(), DownloaderPreferences()))
+        assertNull(transfer.formatFor(post.copy(madeCaptions = listOf("en")), choices, DownloadOptions(), DownloaderPreferences()))
+    }
+}

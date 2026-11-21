@@ -1,0 +1,124 @@
+package com.music.app.feature.backup.work
+
+import com.music.app.core.common.R as CommonR
+import android.app.Notification
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.text.format.Formatter
+import androidx.annotation.StringRes
+import androidx.core.app.NotificationCompat
+import androidx.work.ForegroundInfo
+import com.music.app.core.common.notification.MusicNotificationAction
+import com.music.app.core.common.notification.MusicNotificationChannel
+import com.music.app.core.common.notification.MusicNotificationId
+import com.music.app.core.common.notification.MusicNotifications
+import com.music.app.feature.backup.BackupProgress
+import com.music.app.feature.backup.R
+import com.music.app.feature.backup.Transfer
+import kotlin.math.roundToInt
+
+private const val PROGRESS_MAX = 100
+
+/** What a step says it is doing, with how many of how many where it counts: "Uploading music and videos · 12 of 800". */
+fun backupProgressText(context: Context, progress: BackupProgress?): String? = progress?.let {
+    val label = context.getString(it.step.labelRes)
+    if (it.total > 0) context.getString(R.string.backup_progress_count, label, it.done, it.total) else label
+}
+
+/** [backupProgressText], with its percent while bytes move: "Uploading music and videos · 12 of 800 · 42%". */
+fun backupProgressSummary(context: Context, progress: BackupProgress?): String? {
+    val text = backupProgressText(context, progress) ?: return null
+    val percent = backupProgressPercent(progress)?.takeIf { progress?.transfer != null } ?: return text
+    return listOf(text, context.getString(R.string.backup_progress_percent, percent)).joinToString(" · ")
+}
+
+/** [progress] as a whole percent, where it can tell. */
+private fun backupProgressPercent(progress: BackupProgress?): Int? = progress?.fraction?.let { (it * PROGRESS_MAX).roundToInt() }
+
+/** "340 MB of 780 MB · 1.5 MB/s" - short enough for the notification's top line. */
+private fun transferText(context: Context, transfer: Transfer): String = context.getString(
+    R.string.backup_progress_transfer,
+    Formatter.formatShortFileSize(context, transfer.done),
+    Formatter.formatShortFileSize(context, transfer.total),
+    Formatter.formatShortFileSize(context, transfer.bytesPerSecond),
+)
+
+/**
+ * A run's notification, as its foreground service shows it - with Pause and Stop where it [isPausable]. On Android
+ * 16 and later it is a promoted live update, its percent the title, which the system shows in the status bar too.
+ */
+internal fun foregroundInfo(context: Context, @StringRes titleRes: Int, progress: BackupProgress?, isPausable: Boolean): ForegroundInfo {
+    val notification = runningNotification(context, context.getString(titleRes), progress, isPausable)
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        ForegroundInfo(MusicNotificationId.BACKUP, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+    } else {
+        ForegroundInfo(MusicNotificationId.BACKUP, notification)
+    }
+}
+
+private fun runningNotification(context: Context, title: String, progress: BackupProgress?, isPausable: Boolean): Notification {
+    val actions = if (isPausable) listOf(BackupAction.PAUSE, BackupAction.STOP) else emptyList()
+    return MusicNotifications.progress(
+        context,
+        MusicNotificationChannel.BACKUP,
+        title = title,
+        text = backupProgressText(context, progress) ?: title,
+        detail = progress?.transfer?.let { transferText(context, it) },
+        percent = backupProgressPercent(progress),
+        actions = actions.map { MusicNotificationAction(context.getString(it.labelRes), it.iconRes, it.intent(context)) },
+    )
+}
+
+/** Says the backup is paused, with Resume and Stop - until it is resumed, stopped, or started again. */
+internal fun postPausedNotification(context: Context) {
+    val notification = MusicNotifications.builder(context, MusicNotificationChannel.BACKUP)
+        .setContentTitle(context.getString(R.string.backup_paused_title))
+        .setContentText(context.getString(R.string.backup_paused_text))
+        .apply {
+            listOf(BackupAction.RESUME, BackupAction.STOP).forEach { addAction(it.iconRes, context.getString(it.labelRes), it.intent(context)) }
+        }
+        .build()
+    MusicNotifications.post(context, MusicNotificationId.BACKUP_PAUSED, notification)
+}
+
+internal fun cancelPausedNotification(context: Context) = MusicNotifications.cancel(context, MusicNotificationId.BACKUP_PAUSED)
+
+/**
+ * Says a backup or a restore the user started failed - titled by [titleRes], with [reason] in full - with [retry], its
+ * Try again, where it can be. Left until pressed away, or the next run starts.
+ */
+internal fun postFailedNotification(context: Context, @StringRes titleRes: Int, reason: String, retry: BackupAction?) {
+    val notification = MusicNotifications.builder(context, MusicNotificationChannel.BACKUP)
+        .setContentTitle(context.getString(titleRes))
+        .setContentText(reason)
+        .setStyle(NotificationCompat.BigTextStyle().bigText(reason))
+        .setCategory(NotificationCompat.CATEGORY_ERROR)
+        .setAutoCancel(true)
+        .apply { retry?.let { addAction(it.iconRes, context.getString(it.labelRes), it.intent(context)) } }
+        .build()
+    MusicNotifications.post(context, MusicNotificationId.BACKUP_FAILED, notification)
+}
+
+internal fun cancelFailedNotification(context: Context) = MusicNotifications.cancel(context, MusicNotificationId.BACKUP_FAILED)
+
+/** What a backup's notification offers - see [BackupActionReceiver]. */
+internal enum class BackupAction(@StringRes val labelRes: Int, val iconRes: Int) {
+    PAUSE(R.string.backup_notification_pause, CommonR.drawable.icon_pause),
+    RESUME(R.string.backup_notification_resume, CommonR.drawable.icon_play),
+    STOP(R.string.backup_notification_stop, CommonR.drawable.icon_close),
+    RETRY(R.string.backup_notification_retry, CommonR.drawable.icon_replay),
+    RETRY_RESTORE(R.string.backup_notification_retry, CommonR.drawable.icon_replay),
+    ;
+
+    val intentAction = "com.music.app.backup.action.$name"
+
+    fun intent(context: Context): PendingIntent = PendingIntent.getBroadcast(
+        context,
+        0,
+        Intent(context, BackupActionReceiver::class.java).setAction(intentAction),
+        PendingIntent.FLAG_IMMUTABLE,
+    )
+}

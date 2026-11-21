@@ -1,0 +1,165 @@
+package com.music.app.core.navigation
+
+import android.os.Bundle
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.IntentCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.music.app.core.common.network.NetworkMonitor
+import com.music.app.core.designsystem.MusicActivity
+import com.music.app.core.designsystem.component.screen.LocalScreenEntered
+import com.music.app.core.designsystem.component.NetworkStatusHost
+import com.music.app.core.designsystem.component.MusicTopAppBar
+import com.music.app.core.designsystem.component.WindowOverlayHost
+import com.music.app.core.designsystem.component.fab.FloatingActionButtonStack
+import com.music.app.core.designsystem.component.screen.PlayingRowReveal
+import com.music.app.core.designsystem.theme.AppCoverStyle
+import com.music.app.core.designsystem.theme.AppFastScrollTouchArea
+import com.music.app.core.designsystem.theme.AppTheme
+import com.music.app.core.designsystem.theme.MusicTheme
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.asPaddingValues
+import com.music.app.core.designsystem.component.LocalBottomContentPadding
+
+/**
+ * The single reusable host for every "pushed" screen in the app. Adding a new screen never
+ * touches this class or the manifest - it only needs a [Screen] implementation and a call to
+ * `LocalNavigator.current.go(...)`.
+ *
+ * A Hilt entry point, because the screens it renders resolve their ViewModels with `hiltViewModel()`
+ * - that walks up to the hosting Activity for the component, so without this every pushed screen
+ * with a ViewModel would fail at runtime, however cleanly it compiled.
+ */
+@AndroidEntryPoint
+class HostActivity : MusicActivity() {
+
+    companion object {
+        const val EXTRA_SCREEN = "extra_screen"
+
+        /** Whether the screen opens at its playing row, the full player over it - see [IntentNavigator.arriveAt]. */
+        const val EXTRA_ARRIVES_AT_PLAYING = "extra_arrives_at_playing"
+    }
+
+    /** The same process-wide theme the main activity uses, so a pushed screen is drawn exactly as the library behind it is. */
+    @Inject
+    lateinit var appTheme: AppTheme
+
+    /** The same process-wide cover style, so a pushed screen draws covers exactly as the library does. */
+    @Inject
+    lateinit var appCoverStyle: AppCoverStyle
+
+    /** The same process-wide fast scroll touch area, so a pushed screen's lists grab their thumb as the library's do. */
+    @Inject
+    lateinit var appFastScrollTouchArea: AppFastScrollTouchArea
+
+    /** The same player the main activity lays over its content, so every pushed screen has it too. */
+    @Inject
+    lateinit var playerOverlay: PlayerOverlay
+
+    /** The same prompts the main activity raises, so one reaches the user on a pushed screen too. */
+    @Inject
+    lateinit var appPrompts: AppPrompts
+
+    /** The same connection the main activity follows, so a pushed screen shows its banner too. */
+    @Inject
+    lateinit var networkMonitor: NetworkMonitor
+
+    /** Whether this activity's enter animation is over - see [LocalScreenEntered]. */
+    private val hasEntered = mutableStateOf(false)
+
+    override fun onEnterAnimationComplete() {
+        super.onEnterAnimationComplete()
+        hasEntered.value = true
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val screen = IntentCompat.getSerializableExtra(intent, EXTRA_SCREEN, Screen::class.java)
+        if (screen == null) {
+            finish()
+            return
+        }
+        showsPrivateContent = screen.isPrivate
+        val arrivesAtPlaying = intent.getBooleanExtra(EXTRA_ARRIVES_AT_PLAYING, false)
+        // Normally already worked out by the activity below; only a process restored straight onto this
+        // screen has it to wait for.
+        holdFirstFrameUntil(appTheme::awaitReady)
+
+        setMusicContent {
+            val themeConfig by appTheme.config.collectAsStateWithLifecycle()
+            val coverStyle by appCoverStyle.style.collectAsStateWithLifecycle()
+            val fastScrollTouchArea by appFastScrollTouchArea.touchArea.collectAsStateWithLifecycle()
+            val networkBanner by networkMonitor.banner.collectAsStateWithLifecycle()
+
+            MusicTheme(
+                config = themeConfig,
+                coverStyle = coverStyle,
+                fastScrollTouchArea = fastScrollTouchArea,
+            ) {
+                NetworkStatusHost(networkBanner) {
+                    val navigator = remember { IntentNavigator(this, currentScreen = screen) }
+                    // Only screens that named a title get a bar from the host; the rest draw their own,
+                    // because a title alone cannot express a selection or an action.
+                    val hostedTitle = screen.title(LocalContext.current)
+                    CompositionLocalProvider(LocalNavigator provides navigator, LocalScreenEntered provides hasEntered) {
+                        // Over the player too, so a screen can lay something over the whole window.
+                        WindowOverlayHost {
+                            val screenContent: @Composable () -> Unit = {
+                                // Inside the player, so the screen's FABs stand clear of it.
+                                FloatingActionButtonStack {
+                                    if (arrivesAtPlaying) PlayingRowReveal()
+                                    Scaffold(
+                                        topBar = {
+                                            if (hostedTitle != null) {
+                                                MusicTopAppBar(title = hostedTitle, onNavigateBack = navigator::back)
+                                            }
+                                        },
+                                        // A screen drawing its own bar consumes the status bar inset there; letting the
+                                        // Scaffold add it as well would inset the screen twice. The bottom is never
+                                        // inset here: the screen's lists end clear of the navigation bar themselves,
+                                        // along with the mini player over it.
+                                        contentWindowInsets = if (hostedTitle == null) {
+                                            WindowInsets(0, 0, 0, 0)
+                                        } else {
+                                            ScaffoldDefaults.contentWindowInsets
+                                                .only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+                                        },
+                                    ) { innerPadding ->
+                                        Box(modifier = Modifier.padding(innerPadding)) {
+                                            screen.Content()
+                                        }
+                                    }
+                                }
+                            }
+                            if (screen.hasPlayer) {
+                                playerOverlay.Content(isPrivate = screen.isPrivate, expandsPlayer = arrivesAtPlaying, content = screenContent)
+                            } else {
+                                // No mini player to stand clear of: lists end clear of the navigation bar alone.
+                                CompositionLocalProvider(
+                                    LocalBottomContentPadding provides WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
+                                    content = screenContent,
+                                )
+                            }
+                        }
+                        appPrompts.Content()
+                    }
+                }
+            }
+        }
+    }
+}

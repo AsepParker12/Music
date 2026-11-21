@@ -1,0 +1,14 @@
+package com.music.app.core.model
+
+/** Whether the app is drawn light or dark: as the system is, or always one of the two. ArchiveTune's `DarkMode`. */
+enum class ThemeMode {
+    SYSTEM,
+    LIGHT,
+    DARK,
+    ;
+
+    companion object {
+        /** What it is until the user chooses otherwise. */
+        val Default = SYSTEM
+    }
+}
