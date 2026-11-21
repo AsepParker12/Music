@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.music.app.core.designsystem.theme.buttonPressShapes
 import java.security.MessageDigest
 
 /**
@@ -92,6 +93,7 @@ fun AccessGateScreen(onUnlocked: () -> Unit) {
                 onClick = {
                     if (AccessGate.tryUnlock(context, code)) onUnlocked() else showError = true
                 },
+                shapes = buttonPressShapes(),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(stringResource(R.string.access_gate_button))
