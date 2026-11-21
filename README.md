@@ -1,132 +1,39 @@
-<div align="center">
-
-<img src="docs/media/icon.png" alt="Music icon" width="128" height="128">
-
 # Music
 
-**An offline music player for Android: your files, organised, and played well.**
+Pemutar musik offline untuk Android. Semua lagu berasal dari file yang tersimpan di perangkatmu sendiri — tanpa akun, tanpa streaming, tanpa iklan, dan tanpa pelacak.
 
-[![Latest release](https://img.shields.io/github/v/release/AsepParker12/Music?label=release)](https://github.com/AsepParker12/Music/releases/latest)
-[![License: GPL-3.0](https://img.shields.io/github/license/AsepParker12/Music)](LICENSE)
-[![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](#requirements)
+## Unduh
 
-</div>
+Ambil APK yang sesuai dengan perangkatmu:
 
-Music plays the music stored on your device. It has no accounts, no streaming, no ads and no analytics. It reads your library from Android's media store, keeps it in sync as files change, and gives you a fast library, playlists, synced lyrics and a full player.
-
-## Screenshots
-
-| Library | Player | Queue | Lyrics |
-| :---: | :---: | :---: | :---: |
-| <img src="docs/media/screenshots/library.jpg" width="200" alt="Library"> | <img src="docs/media/screenshots/player.jpg" width="200" alt="Player"> | <img src="docs/media/screenshots/queue.jpg" width="200" alt="Queue"> | <img src="docs/media/screenshots/lyrics.jpg" width="200" alt="Lyrics"> |
-
-| Album | Playlists | Selection | Settings |
-| :---: | :---: | :---: | :---: |
-| <img src="docs/media/screenshots/album.jpg" width="200" alt="Album detail"> | <img src="docs/media/screenshots/playlists.jpg" width="200" alt="Playlists"> | <img src="docs/media/screenshots/selection.jpg" width="200" alt="Multi-select"> | <img src="docs/media/screenshots/settings.jpg" width="200" alt="Settings"> |
-
-## Features
-
-### Library
-
-- Tabs for Tracks, Artists, Albums, Genres and Folders. Each tab can be hidden.
-- Search across all tabs from the top bar.
-- Every list is sortable, and the sort is remembered. Albums, playlists and folders can each keep their own order.
-- Intelligent sorting: ignores leading articles ("The", "A") and orders numbers naturally.
-- Detail screens with a collapsing header for albums, artists, genres and folders.
-- Excluded folders, for audio you never want in the library.
-- The library updates by itself when files are added or removed.
-
-### Selection and actions
-
-- Long-press to select rows, including across tabs, then act on all of them at once.
-- An options sheet on every row: play, shuffle, play next, add to queue, add to playlist, go to artist or album, properties, share.
-- Sharing sends content links to the files, so large selections are shared without copying audio.
-
-### Playlists
-
-- Create, rename and delete playlists, or create one from a folder.
-- Drag tracks into a custom order.
-- Add single tracks, or whole albums, artists, genres, folders and playlists at once.
-- Import and export M3U files.
-- Favorites is a built-in playlist; Recent and Most played are built from your listening history.
-
-### Player and playback
-
-- Mini player that expands into a full player; swipe the cover to change tracks.
-- Reorderable queue, with the collection it is playing from shown in the header.
-- Repeat all, repeat one, stop after current track, and shuffle.
-- Rewind before skip-back, sleep timer, and a built-in equalizer.
-- The queue and position are restored after the app is closed; a media button resumes playback without opening the app.
-- Media notification with shuffle, repeat and favorite controls.
-- Selectable player style and seek bar style.
-
-### Lyrics
-
-- Reads lyrics embedded in audio files, including synced LRC, TTML and QRC.
-- Line-by-line and word-by-word highlighting with adjustable animation.
-- Romanization for Japanese, Korean, Chinese and Hindi.
-- Lyrics for upcoming queue items are preloaded.
-- Optionally looks online for lyrics a track's file lacks, and writes the best match into it (off by default).
-
-### Appearance
-
-- Material 3 with colours taken from the playing track's artwork, in light and dark themes.
-- Composed covers for collections, in several styles.
-
-### Backup and restore
-
-- Back up playlists, favorites, play history, settings, and the covers, background and font you chose - by hand, daily or weekly.
-- Backups are kept in `Android/media/com.music.app/Backup`, the latest one, and can be encrypted with a passphrase.
-- Connect Google Drive to keep backups there too, with one copy of each music and video file from the folders you choose (uploaded over Wi-Fi). A restore brings back only the files a device is missing, compared by their contents, so nothing is duplicated.
-- Restoring adds to what is on the device; nothing there is removed.
-
-### Updates
-
-- Checks this repository for new releases, downloads the APK in the background, and hands it to the system installer. Can be set to check only on request.
-
-## Download
-
-Download the APK from **[GitHub Releases](https://github.com/AsepParker12/Music/releases/latest)**.
-
-| File | Use it when |
+| File | Untuk |
 | --- | --- |
-| `music-<version>-release-universal.apk` | You are not sure. Works on every device. |
-| `music-<version>-release-arm64-v8a.apk` | Most phones from 2017 onward. Smaller download. |
-| `music-<version>-release-armeabi-v7a.apk` | Older 32-bit ARM phones. |
-| `music-<version>-release-x86_64.apk` / `x86.apk` | Emulators and x86 devices. |
+| `music-<versi>-release-arm64-v8a.apk` | Hampir semua HP Android modern (2017 ke atas). Ukuran paling kecil — **ini yang disarankan**. |
+| `music-<versi>-release-universal.apk` | Semua perangkat, kalau ragu pilih yang mana. |
+| `music-<versi>-release-armeabi-v7a.apk` | HP lama dengan prosesor ARM 32-bit. |
+| `music-<versi>-release-x86_64.apk` / `music-<versi>-release-x86.apk` | Emulator dan perangkat x86. |
 
-Android will ask you to allow installing from your browser or file manager the first time. After that, Music updates itself from inside the app (Settings › Updates).
+Saat pertama kali memasang, Android akan meminta izin memasang aplikasi dari browser atau pengelola berkas. Setelah terpasang, pembaruan berikutnya bisa dicek dari dalam aplikasi (Settings › Updates).
 
-Music is not on Google Play or F-Droid.
+## Fitur utama
 
-## Requirements
+- **Pustaka lokal** — trek, artis, album, genre, dan folder dari penyimpanan perangkat; tersinkron otomatis saat file berubah.
+- **Playlist** — buat, urutkan dengan seret, impor/ekspor M3U, plus Favorit, Terakhir diputar, dan Paling sering diputar.
+- **Pemutar lengkap** — antrean yang bisa diatur ulang, shuffle, repeat, sleep timer, dan equalizer bawaan.
+- **Lirik tersinkron** — membaca lirik dari file audio (LRC, TTML, QRC) dengan sorotan per baris dan per kata.
+- **Tampilan Material 3** — warna tema mengikuti sampul lagu yang sedang diputar, mode terang dan gelap.
+- **Cadangan & pemulihan** — simpan playlist, favorit, riwayat, dan pengaturan; bisa terenkripsi dan bisa tersambung ke Google Drive.
+- **Unduhan & transkrip** — tersedia sebagai fitur tambahan; transkrip memakai kunci API milikmu sendiri.
+- **Privasi** — tidak ada akun, tidak ada analitik, tidak ada iklan. Rincian lengkap ada di [PRIVACY.md](PRIVACY.md).
 
-- Android 8.0 (API 26) or newer.
-- Music files stored on the device.
+## Persyaratan
 
-## Permissions
+- Android 8.0 (API 26) atau lebih baru.
+- File musik tersimpan di perangkat.
 
-| Permission | Why |
-| --- | --- |
-| All files access (`MANAGE_EXTERNAL_STORAGE`; the storage permission on Android 10 and older) | Read your music and videos, and edit, move and delete them when you ask. |
-| Notifications (`POST_NOTIFICATIONS`) | Show the playback and update-download notifications. |
-| Install unknown apps (`REQUEST_INSTALL_PACKAGES`, `UPDATE_PACKAGES_WITHOUT_USER_ACTION`) | Install downloaded updates. Android asks you to grant this the first time; from Android 12 on, later updates install by themselves. |
-| Internet and network state | Check for and download updates, look up lyrics and tags, and back up to Google Drive once you connect it. |
-| Foreground service, wake lock, audio settings | Keep playing in the background and apply the equalizer. |
+## Bangun dari sumber
 
-Details in [PRIVACY.md](PRIVACY.md).
-
-## Build from source
-
-### Prerequisites
-
-- **JDK 17 or newer** (the release pipeline uses JDK 21).
-- **Android SDK** with platform 37 installed, or let Gradle download it.
-- An Android Studio version that supports **Android Gradle Plugin 9.1** if you use an IDE.
-
-Gradle 9.3.1 is fetched by the wrapper; you do not need to install it.
-
-### Build
+Siapkan JDK 17 atau lebih baru (disarankan 21) dan Android SDK platform 37, lalu:
 
 ```bash
 git clone https://github.com/AsepParker12/Music.git
@@ -134,76 +41,28 @@ cd Music
 ./gradlew :app:assembleDebug
 ```
 
-The APK is written to `app/build/outputs/apk/debug/`. Debug builds install as **Music Debug** (`com.music.app.debug`), next to a release install, and do not check for updates on their own.
+Hasilnya ada di `app/build/outputs/apk/`. Build debug terpasang sebagai **Music Debug** (`com.music.app.debug`), terpisah dari versi release.
 
-On Windows, use `gradlew.bat` instead of `./gradlew`.
+Untuk build release (per-ABI + universal, dengan minify dan shrink):
 
-### Release builds and signing
-
-`./gradlew :app:assembleRelease` produces per-ABI APKs plus a universal APK. They are signed only if a `keystore.properties` file exists in the project root:
-
-```properties
-storeFile=../music-release-key.jks
-storePassword=...
-keyAlias=...
-keyPassword=...
+```bash
+./gradlew :app:assembleRelease
 ```
 
-`storeFile` is resolved relative to the `app/` module. Both `keystore.properties` and `*.jks` are git-ignored. Without the file, release APKs are built unsigned and cannot be installed.
+APK release hanya dapat dipasang bila ditandatangani. Penandatanganan diatur lewat file `keystore.properties` di root proyek (formatnya dijelaskan di `app/build.gradle.kts`); tanpa file itu, hasil build release tidak bertanda tangan dan tidak bisa dipasang.
 
-## Project structure
+## Struktur proyek
 
-| Module | Contents |
+| Modul | Isi |
 | --- | --- |
-| `:app` | Application class, main activity, app shell, launch screen |
-| `:core:model` | Domain models (tracks, albums, playlists, sort orders) |
-| `:core:common` | Shared utilities: dispatchers, app scope, sorting, storage paths |
-| `:core:database` | Room database, entities and DAOs |
-| `:core:data` | `LibraryRepository` (the app's single view of the library), lyrics loading |
-| `:core:datastore` | User settings (DataStore), loaded before the first screen |
-| `:core:designsystem` | Theme, dynamic colour, shared components, dialogs, menus |
-| `:core:navigation` | Screen contract, navigator, host activity for pushed screens |
-| `:feature:scanner` | MediaStore scanning, live change observation, file walker |
-| `:feature:playback` | Media3 playback service, notification, queue, sleep timer, equalizer |
-| `:feature:player` | Mini player, full player, queue, lyrics UI |
-| `:feature:library` | Library tabs, detail screens, playlists, selection, options sheets |
-| `:feature:settings` | Settings screens |
-| `:feature:equalizer` | Equalizer screen |
-| `:feature:update` | In-app update check, download service and prompt |
-| `:feature:backup` | Backup and restore: the backup format, local and Google Drive backups, media comparison and restore |
+| `:app` | Kelas aplikasi, aktivitas utama, layar pembuka |
+| `:core:model` · `:core:common` | Model data dan utilitas bersama |
+| `:core:database` · `:core:data` · `:core:datastore` | Basis data Room, repositori pustaka, pengaturan pengguna |
+| `:core:designsystem` · `:core:navigation` | Tema, komponen UI, navigasi |
+| `:feature:scanner` · `:feature:playback` · `:feature:player` | Pemindaian media, layanan putar, antarmuka pemutar |
+| `:feature:library` · `:feature:settings` · `:feature:equalizer` | Pustaka & playlist, pengaturan, equalizer |
+| `:feature:update` · `:feature:backup` · `:feature:download` | Pembaruan dalam aplikasi, cadangan, unduhan |
 
-## Built with
+## Lisensi
 
-Kotlin, Jetpack Compose with Material 3, Hilt, Room, DataStore, Media3 (ExoPlayer and MediaSession), Coil, MaterialKolor, AndroidX Palette, ViewPager2, Reorderable, and Kuromoji (Japanese romanization).
-
-## Releases
-
-Every release is built, signed and published by GitHub Actions:
-
-- **Stable** releases (`1.6.0`) come from `./scripts/release.sh`, run by the maintainer - and fixes released on their own from `./scripts/release.sh hotfix`.
-- **Artifact** releases (`1.6.0-beta.1`) - early builds of the next version - come from `./scripts/release.sh artifact <stage>`, or a commit on `dev` the maintainer marks `Release: <stage>`. The in-app updater offers them on the Artifact update channel.
-
-Release notes are gathered from the commits themselves. [docs/RELEASING.md](docs/RELEASING.md) describes the whole process.
-
-## Contributing
-
-Bug reports, feature requests and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Security issues go through [SECURITY.md](SECURITY.md), not public issues.
-
-## Credits
-
-Music ports code from these open-source projects. Ported files say so in their comments.
-
-| Project | License | Used for |
-| --- | --- | --- |
-| [Auxio](https://github.com/OxygenCobalt/Auxio) | GPL-3.0 | Library behaviour, selection, sorting, detail screens, settings |
-| [ArchiveTune](https://github.com/rukamori/ArchiveTune) | GPL-3.0 | Player, queue sheet, lyrics display, online lyrics sources, dynamic theming |
-| [YTDLnis](https://github.com/deniscerri/ytdlnis) | GPL-3.0 | Tag editor's catalogue lookup and tag writing |
-| [syncedlyrics](https://github.com/moehmeni/syncedlyrics) | MIT | NetEase, Musixmatch and Genius lyrics sources |
-| [Fossify Music Player](https://github.com/FossifyOrg/Music-Player) | GPL-3.0 | Media scanning, playback persistence, notification |
-| [cascade](https://github.com/saket/cascade) | Apache-2.0 | Cascading popup menu |
-
-## License
-
-Music is free software, licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE).
-
-Because Music includes GPL-3.0 code from the projects above, any distributed modified version must also be released under GPL-3.0, with its source code available.
+Music adalah perangkat lunak bebas berlisensi **GNU General Public License v3.0** — lihat [LICENSE](LICENSE). Komponen pihak ketiga di dalamnya tunduk pada lisensi masing-masing; daftar lengkapnya tersedia di aplikasi (Settings › About › Licenses).
