@@ -1,10 +1,10 @@
 name: Build release APK
 
-# Manual build of the small, installable release APKs (per-ABI + universal).
-# There is deliberately no permanent keystore for this project: each run
-# generates a throwaway debug key on the runner and signs with it, so the
-# APK installs fine — but a later build signed with a different throwaway
-# key cannot update over it (uninstall first, or use a permanent keystore).
+# Manual build of the small release APKs (per-ABI + universal), signed with
+# the project's own keystore, supplied through repository secrets
+# (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD).
+# The outputs are uploaded as run artifacts; publishing to the Releases
+# page stays a separate, deliberate step.
 
 on:
   workflow_dispatch:
@@ -30,19 +30,23 @@ jobs:
         with:
           cache-read-only: false
 
-      - name: Prepare temporary signing (throwaway debug key)
+      - name: Restore signing keystore
         shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          KS="${RUNNER_TEMP}/music-temp-key.jks"
-          keytool -genkeypair -keystore "$KS" -storepass android -keypass android \
-            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          [ -n "$KEYSTORE_BASE64" ] || { echo "::error::KEYSTORE_BASE64 secret is not set."; exit 1; }
+          KS="${RUNNER_TEMP}/music-release-key.jks"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
           {
             echo "storeFile=${KS}"
-            echo "storePassword=android"
-            echo "keyAlias=androiddebugkey"
-            echo "keyPassword=android"
+            echo "storePassword=${KEYSTORE_PASSWORD}"
+            echo "keyAlias=${KEY_ALIAS}"
+            echo "keyPassword=${KEY_PASSWORD}"
           } > keystore.properties
 
       - name: Build release APKs
