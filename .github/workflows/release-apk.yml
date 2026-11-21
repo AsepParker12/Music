@@ -1,0 +1,70 @@
+name: Build release APK
+
+# Manual build of the small, installable release APKs (per-ABI + universal).
+# There is deliberately no permanent keystore for this project: each run
+# generates a throwaway debug key on the runner and signs with it, so the
+# APK installs fine — but a later build signed with a different throwaway
+# key cannot update over it (uninstall first, or use a permanent keystore).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: false
+
+      - name: Prepare temporary signing (throwaway debug key)
+        shell: bash
+        run: |
+          set -euo pipefail
+          KS="${RUNNER_TEMP}/music-temp-key.jks"
+          keytool -genkeypair -keystore "$KS" -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          {
+            echo "storeFile=${KS}"
+            echo "storePassword=android"
+            echo "keyAlias=androiddebugkey"
+            echo "keyPassword=android"
+          } > keystore.properties
+
+      - name: Build release APKs
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease -Dorg.gradle.jvmargs="-Xmx5g -Dfile.encoding=UTF-8"
+
+      - name: List built APKs
+        shell: bash
+        run: ls -la app/build/outputs/apk/release/
+
+      - name: Upload arm64-v8a APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-release-arm64-v8a
+          path: app/build/outputs/apk/release/music-*-release-arm64-v8a.apk
+          if-no-files-found: error
+
+      - name: Upload universal APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: music-release-universal
+          path: app/build/outputs/apk/release/music-*-release-universal.apk
+          if-no-files-found: error
