@@ -44,9 +44,12 @@ private const val FileReadRetryMs = 10_000L
 
 /**
  * The playing track's synced lyrics on the lock screen and in the notification, while the user has them on:
- * the line playing stands where the album stands in the playing item's metadata - the one text those surfaces
- * show under the title that a line can take - and the album stands there again wherever there is no line to
- * show: the setting off, no synced lyrics in the track's file, a wordless stretch of the song.
+ * the line playing stands where the album stands in the playing item's metadata, and where the artist stands
+ * too. The artist's place is the one that decides it on the phone this is built for: its lock screen card
+ * shows two lines of text alone - the title and the artist - and no album at all, so a line standing only in
+ * the album's place would never be seen there; a surface that does show the album has the line there as well.
+ * The title is never the line's to take. The track's own artist and album stand there again wherever there is
+ * no line to show: the setting off, no synced lyrics in the track's file, a wordless stretch of the song.
  *
  * The lyrics are the file's own first, the very ones the player shows: the tag editor's repository that
  * reads them for the player cannot be reached from here - it is built on this module - so the one tag is
@@ -57,8 +60,8 @@ private const val FileReadRetryMs = 10_000L
  * see [LockScreenLyricsFetch]. The parsing either way is [LyricsUtils], the player's own, with its own
  * lead times, so the line here changes as the line in the player does.
  *
- * A line is put on the item by replacing the item with itself, only its album text changed: the file it
- * opens is the same, so nothing that plays is interrupted - the in-place replacement
+ * A line is put on the item by replacing the item with itself, only its artist and album text changed: the
+ * file it opens is the same, so nothing that plays is interrupted - the in-place replacement
  * [PlaybackService.followLibrary] already keeps the queue's metadata current by. The item is replaced only
  * where the text it carries is not already the text wanted, and that text changes only as the line does.
  *
@@ -240,20 +243,30 @@ internal class LockScreenLyrics(
     }.getOrDefault("")
 
     /**
-     * Stands the playing line where the current item's album stands, or the album back - only where what
-     * stands there is not already that, so the item is replaced only as the line changes.
+     * Stands the playing line where the current item's artist and album stand, or the track's own artist and
+     * album back - only where what stands there is not already that, so the item is replaced only as the line
+     * changes. The artist carries the line because the lock screen card shows the artist under the title and
+     * no album; the album carries it too, for the surfaces that show an album instead.
      */
     private fun refreshLine() {
         val item = player.currentMediaItem ?: return
-        val track = currentTrack()
-        val desired = when {
-            track == null -> return
-            !isEnabled -> track.album
-            loadedTrackId != track.id -> track.album
-            else -> lineAt(player.currentPosition) ?: track.album
+        val track = currentTrack() ?: return
+        val line = when {
+            !isEnabled -> null
+            loadedTrackId != track.id -> null
+            else -> lineAt(player.currentPosition)
         }
-        if (item.mediaMetadata.albumTitle?.toString() == desired) return
-        val metadata = item.mediaMetadata.buildUpon().setAlbumTitle(desired).build()
+        val desiredAlbum = line ?: track.album
+        val desiredArtist = line ?: track.artist
+        if (item.mediaMetadata.albumTitle?.toString() == desiredAlbum &&
+            item.mediaMetadata.artist?.toString() == desiredArtist
+        ) {
+            return
+        }
+        val metadata = item.mediaMetadata.buildUpon()
+            .setAlbumTitle(desiredAlbum)
+            .setArtist(desiredArtist)
+            .build()
         player.replaceMediaItem(player.currentMediaItemIndex, item.buildUpon().setMediaMetadata(metadata).build())
     }
 
