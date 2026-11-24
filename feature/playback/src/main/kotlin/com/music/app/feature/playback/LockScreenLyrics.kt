@@ -14,6 +14,7 @@ import com.music.app.core.datastore.PlaybackSettings
 import com.music.app.core.model.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -30,11 +31,16 @@ private const val TtmlLeadMs = 0L
 /** How far ahead of its time a line is shown, so it is there as it is sung - the player's own tuning. */
 private const val VisualTuningMs = 150L
 
-/** How many times a track found without lyrics is read again while it plays, in case they are being fetched. */
-private const val LyricsReadAttempts = 3
+/**
+ * How many times a track found without synced lyrics has its file read again while it plays. The one writer
+ * that fills a file in unasked - the missing-lyrics finder - waits on every one of its sources before it
+ * writes, which takes well past a few seconds; the reads run on for about two minutes before giving the
+ * track up for this play of it.
+ */
+private const val FileReadAttempts = 12
 
 /** The wait between those reads. */
-private const val LyricsReadRetryMs = 10_000L
+private const val FileReadRetryMs = 10_000L
 
 /**
  * The playing track's synced lyrics on the lock screen and in the notification, while the user has them on:
@@ -42,10 +48,14 @@ private const val LyricsReadRetryMs = 10_000L
  * show under the title that a line can take - and the album stands there again wherever there is no line to
  * show: the setting off, no synced lyrics in the track's file, a wordless stretch of the song.
  *
- * The lyrics are the file's own, the very ones the player shows: the tag editor's repository that reads them
- * for the player cannot be reached from here - it is built on this module - so the one tag is read from the
- * file directly, by the same TagLib call the editor makes. The parsing is [LyricsUtils], the player's own,
- * with its own lead times, so the line here changes as the line in the player does.
+ * The lyrics are the file's own first, the very ones the player shows: the tag editor's repository that
+ * reads them for the player cannot be reached from here - it is built on this module - so the one tag is
+ * read from the file directly, by the same TagLib call the editor makes. A file holding none that are
+ * synced - the common case for a downloaded song, whose lyrics nothing has written in: the finder that
+ * would is let write files only where Android lets Music change them unasked - is not the end of it:
+ * LRCLIB is searched from here, as the editor searches it, and what it gives is held in memory alone -
+ * see [LockScreenLyricsFetch]. The parsing either way is [LyricsUtils], the player's own, with its own
+ * lead times, so the line here changes as the line in the player does.
  *
  * A line is put on the item by replacing the item with itself, only its album text changed: the file it
  * opens is the same, so nothing that plays is interrupted - the in-place replacement
@@ -81,6 +91,12 @@ internal class LockScreenLyrics(
     private var entries: List<LyricsEntry> = emptyList()
     private var leadMs: Long = LrcLeadMs
 
+    /** The load running for the loaded track - the file reads and the web search together - let go with it. */
+    private var loadJob: Job? = null
+
+    /** Whether the loaded track's synced lyrics are in hand, from its file or from the web. */
+    private var lyricsReady = false
+
     fun attach() {
         player.addListener(this)
         scope.launch {
@@ -96,13 +112,16 @@ internal class LockScreenLyrics(
 
     fun detach() {
         ticker.removeCallbacks(tick)
+        loadJob?.cancel()
         player.removeListener(this)
     }
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         // A new item carries its own album: whatever line the last one showed is gone with it.
+        loadJob?.cancel()
         loadedTrackId = null
         entries = emptyList()
+        lyricsReady = false
         loadLyricsForCurrentTrack()
         refreshLine()
         updateTicker()
@@ -130,30 +149,57 @@ internal class LockScreenLyrics(
     }
 
     /**
-     * Reads the current track's file for its lyrics and parses them as the player does. Read again while the
-     * track plays when the file holds none yet, as they may be being looked for on the web meanwhile and
-     * written into the file when found - the player's own way of coming by them.
+     * Loads the current track's synced lyrics, from wherever they come first: its file, read as the player
+     * reads it and read again while the track plays - the missing-lyrics finder may write them into it
+     * meanwhile, late, as it waits on all of its sources before writing - and LRCLIB, searched alongside
+     * for a file that holds none. Whichever gives synced lyrics first is the one that stands; a track given
+     * up on is looked for again the next time it comes round.
      */
     private fun loadLyricsForCurrentTrack() {
-        if (!isEnabled) return
+        if (!isEnabled) {
+            loadJob?.cancel()
+            return
+        }
         val track = currentTrack() ?: return
         if (loadedTrackId == track.id) return
         loadedTrackId = track.id
-        scope.launch {
-            var attempt = 0
-            while (true) {
-                val raw = withContext(Dispatchers.IO) { readLyricsText(track) }
-                if (loadedTrackId != track.id) return@launch
-                val parsed = parse(raw, track.durationMs)
-                entries = parsed.first
-                leadMs = parsed.second
-                refreshLine()
-                if (entries.isNotEmpty() || attempt >= LyricsReadAttempts - 1) break
-                attempt++
-                delay(LyricsReadRetryMs)
-                if (loadedTrackId != track.id) return@launch
+        lyricsReady = false
+        loadJob?.cancel()
+        loadJob = scope.launch {
+            launch { readFileLyrics(track) }
+            launch {
+                val fetched = LockScreenLyricsFetch.syncedLyrics(track) ?: return@launch
+                if (loadedTrackId != track.id || lyricsReady) return@launch
+                applyParsed(track, parse(fetched, track.durationMs))
             }
         }
+    }
+
+    /** [track]'s file, read for its lyrics and read again while it plays - see [loadLyricsForCurrentTrack]. */
+    private suspend fun readFileLyrics(track: Track) {
+        var attempt = 0
+        while (true) {
+            val raw = withContext(Dispatchers.IO) { readLyricsText(track) }
+            if (loadedTrackId != track.id || lyricsReady) return
+            val parsed = parse(raw, track.durationMs)
+            if (parsed.first.isNotEmpty()) {
+                applyParsed(track, parsed)
+                return
+            }
+            if (attempt >= FileReadAttempts - 1) return
+            attempt++
+            delay(FileReadRetryMs)
+            if (loadedTrackId != track.id || lyricsReady) return
+        }
+    }
+
+    /** Stands [parsed] as the loaded track's lyrics, where it is still that track and none stand yet. */
+    private fun applyParsed(track: Track, parsed: Pair<List<LyricsEntry>, Long>) {
+        if (parsed.first.isEmpty() || loadedTrackId != track.id || lyricsReady) return
+        entries = parsed.first
+        leadMs = parsed.second
+        lyricsReady = true
+        refreshLine()
     }
 
     /**
