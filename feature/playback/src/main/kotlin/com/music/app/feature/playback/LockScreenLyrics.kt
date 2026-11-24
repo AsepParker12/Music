@@ -1,7 +1,9 @@
 package com.music.app.feature.playback
 
 import android.content.Context
+import android.net.Uri
 import android.os.Handler
+import android.os.ParcelFileDescriptor
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import com.kyant.taglib.TagLib
@@ -12,6 +14,8 @@ import com.music.app.core.data.lyrics.LyricsEntry
 import com.music.app.core.data.lyrics.LyricsUtils
 import com.music.app.core.datastore.PlaybackSettings
 import com.music.app.core.model.Track
+import java.io.File
+import java.io.InputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,6 +46,9 @@ private const val FileReadAttempts = 12
 /** The wait between those reads. */
 private const val FileReadRetryMs = 10_000L
 
+/** The trailing ID3v1 tag TagLib writes after MPEG audio: "TAG" and 125 bytes more. */
+private const val Id3v1Size = 128L
+
 /**
  * The playing track's synced lyrics on the lock screen and in the notification, while the user has them on:
  * the line playing stands where the album stands in the playing item's metadata, and where the artist stands
@@ -53,7 +60,11 @@ private const val FileReadRetryMs = 10_000L
  *
  * The lyrics are the file's own first, the very ones the player shows: the tag editor's repository that
  * reads them for the player cannot be reached from here - it is built on this module - so the one tag is
- * read from the file directly, by the same TagLib call the editor makes. A file holding none that are
+ * read from the file directly, by the same TagLib call the editor makes, and with the editor's other care
+ * besides: TagLib takes a file by its name before its content, so a file named for what it does not hold -
+ * an MP4 saved as `.mp3`, as downloads so often are - is read as the thing it is named for and gives up
+ * nothing, the lyrics the editor itself wrote into it included; such a file is read here through a copy
+ * named for what it holds, as the editor reads it - see [fileLayoutOf]. A file holding none that are
  * synced - the common case for a downloaded song, whose lyrics nothing has written in: the finder that
  * would is let write files only where Android lets Music change them unasked - is not the end of it:
  * LRCLIB is searched from here, as the editor searches it, and what it gives is held in memory alone -
@@ -231,16 +242,135 @@ internal class LockScreenLyrics(
     /**
      * The lyrics [track]'s file holds, as written - blank where it holds none. The editor's own read, in
      * `TrackTagsRepository`, takes the same TagLib property of the same name; this is that read without the
-     * editor around it.
+     * editor around it, its layout care included - see [fileLayoutOf].
      */
     private fun readLyricsText(track: Track): String = runCatching {
-        val descriptor = context.contentResolver.openFileDescriptor(track.contentUri, "r") ?: return ""
-        descriptor.use { file ->
-            // TagLib takes the descriptor it is handed as its own and closes it: it is given a duplicate.
-            val properties = TagLib.getMetadata(file.dup().detachFd(), readPictures = false)?.propertyMap
-            properties?.get("LYRICS")?.firstOrNull()?.repairedTagText()?.trim().orEmpty()
+        val layout = fileLayoutOf(track)
+        if (layout == null || !layout.needsCopy) return@runCatching lyricsTagOf(track.contentUri)
+        val proper = lyricsThroughCopy(track, layout)
+        // What stands in a misplaced tag is the latest the user gave: its lyrics stand over the file's own,
+        // as they do in the editor's read - and where it holds none, the file's own stand.
+        if (!layout.hasForeignId3) proper else lyricsTagOf(track.contentUri).ifBlank { proper }
+    }.getOrDefault("")
+
+    /** The LYRICS tag of the file at [uri], read as TagLib takes that file by its name - blank for none. */
+    private fun lyricsTagOf(uri: Uri): String {
+        val descriptor = context.contentResolver.openFileDescriptor(uri, "r") ?: return ""
+        return descriptor.use { lyricsTagOf(it) }
+    }
+
+    /** The LYRICS tag [file] holds - blank where it holds none. */
+    private fun lyricsTagOf(file: ParcelFileDescriptor): String {
+        // TagLib takes the descriptor it is handed as its own and closes it: it is given a duplicate.
+        val properties = TagLib.getMetadata(file.dup().detachFd(), readPictures = false)?.propertyMap
+        return properties?.get("LYRICS")?.firstOrNull()?.repairedTagText()?.trim().orEmpty()
+    }
+
+    /**
+     * The LYRICS tag of [track]'s file read through a copy named for what the file holds - without the tags
+     * misplaced around it - as the editor reads such a file. The copy is let go after; the file itself is
+     * only ever read, never written, so nothing here can spoil it.
+     */
+    private fun lyricsThroughCopy(track: Track, layout: FileLayout): String = runCatching {
+        val dir = File(context.cacheDir, "lock-screen-lyrics").apply { mkdirs() }
+        val copy = File.createTempFile("tags", ".${checkNotNull(layout.container).extension}", dir)
+        try {
+            checkNotNull(context.contentResolver.openInputStream(track.contentUri)) { "Cannot read ${track.contentUri}" }.use { input ->
+                input.skipFully(layout.foreignId3Size)
+                var length = layout.size - layout.foreignId3Size
+                if (layout.hasForeignId3 && endsWithId3v1(track, layout.size)) length -= Id3v1Size
+                copy.outputStream().use { output -> input.copyExactly(output, length) }
+            }
+            ParcelFileDescriptor.open(copy, ParcelFileDescriptor.MODE_READ_ONLY).use { lyricsTagOf(it) }
+        } finally {
+            copy.delete()
         }
     }.getOrDefault("")
+
+    /**
+     * How [track]'s file is laid out, told by its first bytes next to what its name names it - the editor's
+     * own telling, in `TagFile`, mirrored because the editor is built on this module and cannot be reached
+     * from here. Null where the telling itself cannot be made, in which case the file is read as it stands.
+     */
+    private fun fileLayoutOf(track: Track): FileLayout? = runCatching {
+        val uri = track.contentUri
+        val size = checkNotNull(context.contentResolver.openFileDescriptor(uri, "r")) { "Cannot open $uri" }.use { it.statSize }
+        val (head, id3Size) = checkNotNull(context.contentResolver.openInputStream(uri)) { "Cannot read $uri" }.use { input ->
+            val start = input.readNBytesCompat(10)
+            val id3Size = id3v2SizeOf(start)
+            if (id3Size > 0) input.skipFully(id3Size - start.size)
+            (if (id3Size > 0) input.readNBytesCompat(16) else start + input.readNBytesCompat(6)) to id3Size
+        }
+        val container = FileContainer.of(head, hadId3 = id3Size > 0)
+        val foreign = id3Size > 0 && container != null && container != FileContainer.MPEG && container != FileContainer.FLAC
+        FileLayout(container, FileContainer.named(track.path.substringAfterLast('.', "")), if (foreign) id3Size else 0L, size)
+    }.getOrNull()
+
+    /** How a file is laid out - see [fileLayoutOf]. The editor's `TagFile.Layout`, mirrored. */
+    private class FileLayout(
+        val container: FileContainer?,
+        val named: FileContainer?,
+        /** The bytes of an ID3v2 tag in front of a container that holds none of its own - TagLib's, misplaced. */
+        val foreignId3Size: Long,
+        val size: Long,
+    ) {
+        val hasForeignId3: Boolean get() = foreignId3Size > 0
+
+        /** Whether TagLib, going by the name, would take the file for something it is not. */
+        val needsCopy: Boolean get() = hasForeignId3 || container != null && named != null && container != named
+    }
+
+    /** Whether the file [track] names ends with an ID3v1 tag - "TAG" and 125 bytes more. */
+    private fun endsWithId3v1(track: Track, size: Long): Boolean {
+        if (size < Id3v1Size) return false
+        return checkNotNull(context.contentResolver.openInputStream(track.contentUri)) { "Cannot read ${track.contentUri}" }.use { input ->
+            input.skipFully(size - Id3v1Size)
+            input.readNBytesCompat(3).contentEquals("TAG".toByteArray(Charsets.ISO_8859_1))
+        }
+    }
+
+    /** The size of the ID3v2 tag [head] starts with, header and footer included, or 0 for none. */
+    private fun id3v2SizeOf(head: ByteArray): Long {
+        if (head.size < 10 || head[0] != 'I'.code.toByte() || head[1] != 'D'.code.toByte() || head[2] != '3'.code.toByte()) return 0L
+        val body = (6..9).fold(0L) { size, index -> (size shl 7) or (head[index].toLong() and 0x7F) }
+        val hasFooter = head[5].toInt() and 0x10 != 0
+        return 10 + body + if (hasFooter) 10 else 0
+    }
+
+    private fun InputStream.readNBytesCompat(count: Int): ByteArray {
+        val buffer = ByteArray(count)
+        var read = 0
+        while (read < count) {
+            val n = read(buffer, read, count - read)
+            if (n < 0) break
+            read += n
+        }
+        return if (read == count) buffer else buffer.copyOf(read)
+    }
+
+    private fun InputStream.skipFully(count: Long) {
+        var left = count
+        while (left > 0) {
+            val skipped = skip(left)
+            if (skipped <= 0) {
+                check(read() >= 0) { "The file ended early" }
+                left--
+            } else {
+                left -= skipped
+            }
+        }
+    }
+
+    private fun InputStream.copyExactly(output: java.io.OutputStream, count: Long) {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE * 8)
+        var left = count
+        while (left > 0) {
+            val n = read(buffer, 0, minOf(buffer.size.toLong(), left).toInt())
+            check(n >= 0) { "The file ended early" }
+            output.write(buffer, 0, n)
+            left -= n
+        }
+    }
 
     /**
      * Stands the playing line where the current item's artist and album stand, or the track's own artist and
@@ -275,5 +405,75 @@ internal class LockScreenLyrics(
         if (entries.isEmpty()) return null
         val index = LyricsUtils.findCurrentLineIndex(entries, positionMs + leadMs + VisualTuningMs, 0L)
         return entries.getOrNull(index)?.text?.takeIf { it.isNotBlank() }
+    }
+}
+
+/**
+ * What a file holds, told by its name or by its first bytes - the tag editor's `AudioContainer`, mirrored
+ * for the reads above, as the editor cannot be reached from here. [extension] is the name TagLib reads
+ * each by.
+ */
+private enum class FileContainer(val extension: String) {
+    MPEG("mp3"),
+    MP4("m4a"),
+    FLAC("flac"),
+    OGG("ogg"),
+    WAV("wav"),
+    AIFF("aiff"),
+    MATROSKA("mka"),
+    ASF("wma"),
+    APE("ape"),
+    WAVPACK("wv"),
+    DSF("dsf"),
+    DSDIFF("dff"),
+    ;
+
+    companion object {
+        /** The container TagLib takes a file named with [extension] to be, or null where it looks inside instead. */
+        fun named(extension: String): FileContainer? = when (extension.lowercase()) {
+            "mp3", "mp2", "aac" -> MPEG
+            "m4a", "m4r", "m4b", "m4p", "mp4", "3g2", "m4v" -> MP4
+            "flac" -> FLAC
+            "ogg", "oga", "opus" -> OGG
+            "wav" -> WAV
+            "aif", "aiff", "afc", "aifc" -> AIFF
+            "mka", "mkv", "webm" -> MATROSKA
+            "wma", "asf" -> ASF
+            "ape" -> APE
+            "wv" -> WAVPACK
+            "dsf" -> DSF
+            "dff", "dsdiff" -> DSDIFF
+            else -> null
+        }
+
+        /**
+         * The container [head] - a file's first bytes, past any ID3v2 tag in front of them - opens, or null
+         * where they say none TagLib tags. MPEG audio has no mark of its own, so it is what is left when
+         * [hadId3] says an ID3v2 tag stood in front.
+         */
+        fun of(head: ByteArray, hadId3: Boolean): FileContainer? = when {
+            head.hasAt(4, "ftyp") -> MP4
+            head.hasAt(0, "fLaC") -> FLAC
+            head.hasAt(0, "OggS") -> OGG
+            head.hasAt(0, "RIFF") && head.hasAt(8, "WAVE") -> WAV
+            head.hasAt(0, "FORM") && (head.hasAt(8, "AIFF") || head.hasAt(8, "AIFC")) -> AIFF
+            head.hasAt(0, byteArrayOf(0x1A, 0x45, 0xDF.toByte(), 0xA3.toByte())) -> MATROSKA
+            head.hasAt(0, byteArrayOf(0x30, 0x26, 0xB2.toByte(), 0x75, 0x8E.toByte(), 0x66, 0xCF.toByte(), 0x11)) -> ASF
+            head.hasAt(0, "MAC ") -> APE
+            head.hasAt(0, "wvpk") -> WAVPACK
+            head.hasAt(0, "DSD ") -> DSF
+            head.hasAt(0, "FRM8") -> DSDIFF
+            hadId3 || head.isMpegFrameSync() -> MPEG
+            else -> null
+        }
+
+        private fun ByteArray.hasAt(offset: Int, text: String): Boolean = hasAt(offset, text.toByteArray(Charsets.ISO_8859_1))
+
+        private fun ByteArray.hasAt(offset: Int, bytes: ByteArray): Boolean =
+            size >= offset + bytes.size && bytes.indices.all { this[offset + it] == bytes[it] }
+
+        /** An MPEG audio frame - or an AAC one in ADTS - starts on eleven set bits. */
+        private fun ByteArray.isMpegFrameSync(): Boolean =
+            size >= 2 && this[0] == 0xFF.toByte() && (this[1].toInt() and 0xE0) == 0xE0
     }
 }
