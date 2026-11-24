@@ -113,6 +113,7 @@ class PlaybackService : MediaSessionService() {
     private lateinit var mediaSession: MediaSession
     private lateinit var playHistoryRecorder: PlayHistoryRecorder
     private lateinit var resumePositionRecorder: ResumePositionRecorder
+    private lateinit var lockScreenLyrics: LockScreenLyrics
 
     // Live-updated snapshots read synchronously from Player.Listener / the forwarding player -
     // DataStore is Flow/suspend-based, so runtime changes are mirrored into these volatile fields
@@ -363,6 +364,10 @@ class PlaybackService : MediaSessionService() {
         playHistoryRecorder = PlayHistoryRecorder(exoPlayer, serviceScope, listenHistory, playbackSettings).also { it.attach() }
         serviceScope.launch { exoPlayer.followLiveDownloads(liveDownloads) }
         resumePositionRecorder = ResumePositionRecorder(exoPlayer, resumePositions).also { it.attach() }
+
+        // The playing line of the track's synced lyrics where its album stands, for the lock screen and
+        // the notification, while the user has it on - attached to the player, so it holds with no screen open.
+        lockScreenLyrics = LockScreenLyrics(this, exoPlayer, playbackSettings, libraryRepository, serviceScope).also { it.attach() }
 
         forwardingPlayer = PlaybackForwardingPlayer(exoPlayer) { forwardingSettings }
 
@@ -633,6 +638,7 @@ class PlaybackService : MediaSessionService() {
         unregisterReceiver(headsetReceiver)
         playHistoryRecorder.detach()
         resumePositionRecorder.detach()
+        lockScreenLyrics.detach()
         serviceScope.cancel()
         mediaSession.release()
         // Before the player, while the audio session the effect is attached to still exists.

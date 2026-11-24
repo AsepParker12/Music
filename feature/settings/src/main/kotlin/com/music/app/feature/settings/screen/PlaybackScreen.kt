@@ -48,6 +48,7 @@ data object PlaybackScreen : Screen {
         val headsetAutoplay by viewModel.headsetAutoplay.collectAsStateWithLifecycle()
         val stopAfterCurrentEnabled by viewModel.stopAfterCurrentEnabled.collectAsStateWithLifecycle()
         val persistedPlaybackNotification by viewModel.persistedPlaybackNotification.collectAsStateWithLifecycle()
+        val lockScreenLyrics by viewModel.lockScreenLyrics.collectAsStateWithLifecycle()
         val keepShuffle by viewModel.keepShuffle.collectAsStateWithLifecycle()
         val reshuffleEachTime by viewModel.reshuffleEachTime.collectAsStateWithLifecycle()
         val rememberShuffleOrder by viewModel.rememberShuffleOrder.collectAsStateWithLifecycle()
@@ -93,6 +94,12 @@ data object PlaybackScreen : Screen {
                     summary = stringResource(R.string.persisted_playback_notification_summary),
                     checked = persistedPlaybackNotification,
                     onCheckedChange = viewModel::setPersistedPlaybackNotification,
+                )
+                SettingsSwitchItem(
+                    title = stringResource(R.string.lock_screen_lyrics_title),
+                    summary = stringResource(R.string.lock_screen_lyrics_summary),
+                    checked = lockScreenLyrics,
+                    onCheckedChange = viewModel::setLockScreenLyrics,
                 )
                 SettingsSwitchItem(
                     title = stringResource(R.string.persistent_queue_title),

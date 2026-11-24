@@ -59,6 +59,9 @@ class PlaybackSettingsViewModel @Inject constructor(
     val persistedPlaybackNotification: StateFlow<Boolean> = playbackSettings.persistedPlaybackNotification.flow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), playbackSettings.persistedPlaybackNotification.value)
 
+    val lockScreenLyrics: StateFlow<Boolean> = playbackSettings.lockScreenLyrics.flow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), playbackSettings.lockScreenLyrics.value)
+
     val stopAfterCurrentEnabled: StateFlow<Boolean> = playbackSettings.stopAfterCurrentEnabled.flow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), playbackSettings.stopAfterCurrentEnabled.value)
 
@@ -85,6 +88,10 @@ class PlaybackSettingsViewModel @Inject constructor(
 
     fun setPersistedPlaybackNotification(enabled: Boolean) {
         viewModelScope.launch { playbackSettings.setPersistedPlaybackNotification(enabled) }
+    }
+
+    fun setLockScreenLyrics(enabled: Boolean) {
+        viewModelScope.launch { playbackSettings.setLockScreenLyrics(enabled) }
     }
 
     fun setStopAfterCurrentEnabled(enabled: Boolean) {

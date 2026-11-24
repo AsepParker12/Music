@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lock_screen_lyrics_title">Lirik di layar kunci</string>
+    <string name="lock_screen_lyrics_summary">Tampilkan baris lirik tersinkron yang sedang diputar menggantikan album di notifikasi dan layar kunci</string>
+</resources>

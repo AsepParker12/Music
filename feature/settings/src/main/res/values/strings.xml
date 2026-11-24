@@ -227,6 +227,8 @@
     <string name="counts_videos_in_most_played_summary">List the videos played most beside the music</string>
     <string name="persisted_playback_notification_title">Persisted playback notification</string>
     <string name="persisted_playback_notification_summary">Keep the last track in a notification when Music is closed, ready for headphones and Bluetooth to resume</string>
+    <string name="lock_screen_lyrics_title">Lyrics on lock screen</string>
+    <string name="lock_screen_lyrics_summary">Show the playing line of a track\'s synced lyrics in place of its album in the notification and on the lock screen</string>
     <string name="persistent_queue_title">Restore the queue</string>
     <string name="persistent_queue_summary">Bring the queue back when the app reopens</string>
     <string name="skip_on_error_title">Skip unplayable tracks</string>

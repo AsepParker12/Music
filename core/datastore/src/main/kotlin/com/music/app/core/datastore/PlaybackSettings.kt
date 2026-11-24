@@ -22,6 +22,7 @@ private val HEADSET_AUTOPLAY = booleanPreferencesKey("headset_autoplay")
 private val EXITS_ON_CLOSE = booleanPreferencesKey("exits_on_close")
 private val PAUSES_LISTEN_HISTORY = booleanPreferencesKey("pauses_listen_history")
 private val PERSISTED_PLAYBACK_NOTIFICATION = booleanPreferencesKey("persisted_playback_notification")
+private val LOCK_SCREEN_LYRICS = booleanPreferencesKey("lock_screen_lyrics")
 private val REPEAT_MODE = stringPreferencesKey("repeat_mode")
 private val STOP_AFTER_CURRENT_ENABLED = booleanPreferencesKey("stop_after_current_enabled")
 private val PLAYBACK_PARENT = stringPreferencesKey("playback_parent")
@@ -94,6 +95,17 @@ class PlaybackSettings @Inject constructor(
 
     suspend fun setPersistedPlaybackNotification(enabled: Boolean) {
         dataStore.edit { it[PERSISTED_PLAYBACK_NOTIFICATION] = enabled }
+    }
+
+    /**
+     * Whether the playing track's synced lyrics stand on the lock screen and in the notification: the line
+     * playing in place of the album, in the session's metadata - the album back wherever there is no line to
+     * show. Off, those surfaces show the album as they always have.
+     */
+    val lockScreenLyrics: Setting<Boolean> = cache.setting { it[LOCK_SCREEN_LYRICS] ?: false }
+
+    suspend fun setLockScreenLyrics(enabled: Boolean) {
+        dataStore.edit { it[LOCK_SCREEN_LYRICS] = enabled }
     }
 
     /**

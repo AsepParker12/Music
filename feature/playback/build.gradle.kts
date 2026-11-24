@@ -28,6 +28,9 @@ dependencies {
     // video's file itself. See EmbeddedExtras.
     implementation(project(":core:downloader"))
 
+    // The playing track's own lyrics tag, read from its file for the lock screen - see LockScreenLyrics.
+    implementation(libs.taglib)
+
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.common)
